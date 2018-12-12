@@ -1,0 +1,29 @@
+#!/bin/bash
+
+read -p "Run on current folder?(Y/n) " answer
+if [[ "${answer}" == "y" ]] || [[ "${answer}" == "Y" ]]; then
+  read -p "Specify the outgroup: " outgroup
+  read -p "Specify what species for the sequence extraction: " ingroup
+
+  dir=$(pwd)
+  rm -rf ${dir}/output
+  mkdir ${dir}/output
+
+  for f in *.fasta; do
+    name=$(basename ${f} | cut -d "." -f 1)
+    txn=$(($(echo "${ingroup}" | grep -o ',' | wc -l) + 1))
+
+    n=1
+    until [[ "${n}" -gt "${txn}" ]]; do
+      txname=$(echo "${ingroup}" | cut -d "," -f ${n})
+      outgroup_seq=$(cat ${f} | grep -A1 "${outgroup}")
+      txseq_Z=$(cat ${f} | grep -A1 "${txname}_Z")
+      txseq_W=$(cat ${f} | grep -A1 "${txname}_W")
+
+      echo "${outgroup_seq}" >${dir}/output/${name}-${txname}.fasta
+      echo "${txseq_Z}" >>${dir}/output/${name}-${txname}.fasta
+      echo "${txseq_W}" >>${dir}/output/${name}-${txname}.fasta
+      ((n++))
+    done
+  done
+fi
