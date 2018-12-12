@@ -1,0 +1,116 @@
+#!/bin/bash
+
+all="FALSE"
+
+usage="[-f] Specify the folder name.
+[-e] Specify the extraction outcome:
+     [label]. Extract trees WITH gene name ahead.
+        [na]. Extract trees WITHOUT gene name ahead.
+      [topo]. Extract trees with the only the topology.
+[-a] Run both 1st and 2nd options.
+[-o] Specify outgroup.
+[-h] Display the usage."
+
+while getopts "f:e:ao:rh" opt; do
+  case ${opt} in
+  f) fdname=$(echo "${OPTARG}" | cut -d "/" -f 1) ;;
+  e) ex_method=${OPTARG} ;;
+  a) all="TRUE" ;;
+  o) outgroup=${OPTARG} ;;
+  r) root="reroot" ;;
+  h) echo -e "${usage}" ;;
+  esac
+done
+
+curdir=$(pwd)
+# Check the settings
+if [[ -z "${fdname}" ]]; then
+  echo -e "***Message:Please specify the folder."
+  echo -e "\n${usage}"
+  exit
+elif [[ ! -d "${curdir}/${fdname}" ]]; then
+  echo -e "***Message:Folder does NOT exist."
+  echo -e "\n${usage}"
+  exit
+fi
+
+if [[ "${root}" == "reroot" ]]; then
+  random_file=$(ls ${curdir}/${fdname}/*treefile | sed -n "1p")
+  outgroup_check=$(cat ${random_file} | grep "${outgroup}")
+  if [[ -z "${outgroup}" ]] || [[ -z "${outgroup_check}" ]]; then
+    echo -e "***Message:Please specify the outgroup."
+    echo -e "\n${usage}"
+    exit
+  fi
+fi
+
+if [[ -z "${ex_method}" ]] && [[ "${all}" == "FALSE" ]]; then
+  if [[ "${root}" == "reroot" ]]; then
+    echo -e "***Message:Only reroot the trees."
+  fi
+else
+  if [[ "${all}" == "TRUE" ]]; then
+    ex_method="Overwritten"
+  fi
+  rm -rf ${curdir}/TreeSum
+  mkdir ${curdir}/TreeSum
+  save_dir="${curdir}/TreeSum"
+  if [[ "${root}" == "reroot" ]]; then
+    mkdir ${curdir}/TreeSum/${fdname}
+    mkdir ${curdir}/TreeSum/${fdname}_rooted
+    save_dir="${curdir}/TreeSum/${fdname}"
+  fi
+fi
+
+
+# Start
+if [[ "${root}" == "reroot" ]]; then
+  rm -rf ${curdir}/${fdname}_rooted
+  mkdir ${curdir}/${fdname}_rooted
+
+  for file in ${curdir}/${fdname}/*treefile; do
+    namepre=$(echo "${file}")
+    name=$(basename ${namepre})
+    nw_reroot ${file} ${outgroup} >${curdir}/${fdname}_rooted/${name}
+  done
+fi
+
+for file in ${curdir}/${fdname}/*treefile; do
+  namepre=$(echo "${file}")
+  name=$(basename ${namepre} | cut -d "." -f 1 | cut -d "-" -f 2)
+  seq=$(sed -n "1p" ${file})
+
+  if [[ "${ex_method}" == "label" ]]; then
+    echo "$name $seq" >>${save_dir}/EvoTrees_label.tre
+  elif [[ "${ex_method}" == "na" ]]; then
+    echo "$seq" >>${save_dir}/EvoTrees.tre
+  elif [[ "${ex_method}" == "topo" ]]; then
+    nw_topology -I ${file} >>${save_dir}/EvoTrees_topology.tre
+  elif [[ "${all}" == "TRUE" ]]; then
+    echo "$name $seq" >>${save_dir}/EvoTrees_label.tre
+    echo "$seq" >>${save_dir}/EvoTrees.tre
+    nw_topology -I ${file} >>${save_dir}/EvoTrees_topology.tre
+  fi
+done
+
+if [[ "${root}" == "reroot" ]]; then
+  for file in ${curdir}/${fdname}_rooted/*treefile; do
+    namepre=$(echo "${file}")
+    name=$(basename ${namepre} | cut -d "." -f 1 | cut -d "-" -f 2)
+    seq=$(sed -n "1p" ${file})
+
+    if [[ "${ex_method}" == "label" ]]; then
+      echo "$name $seq" >>${save_dir}_rooted/EvoTrees_label.tre
+    elif [[ "${ex_method}" == "na" ]]; then
+      echo "$seq" >>${save_dir}_rooted/EvoTrees.tre
+    elif [[ "${ex_method}" == "topo" ]]; then
+      nw_topology -I ${file} >>${save_dir}_rooted/EvoTrees_topology.tre
+    elif [[ "${all}" == "TRUE" ]]; then
+      echo "$name $seq" >>${save_dir}_rooted/EvoTrees_label.tre
+      echo "$seq" >>${save_dir}_rooted/EvoTrees.tre
+      nw_topology -I ${file} >>${save_dir}_rooted/EvoTrees_topology.tre
+    fi
+  done
+fi
+
+echo -e "\n-----< Job Done! >-----"
