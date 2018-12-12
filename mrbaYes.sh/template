@@ -1,0 +1,8 @@
+set autoclose=yes
+execute <seqfile>
+<modelsetting>
+mcmcp ngen= 500000 nruns=2 Mcmcdiagn=yes Diagnfreq=1000 relburnin=yes burninfrac=0.25 nchains=4 samplefreq=100 printfreq=100 
+mcmc
+sump
+sumt
+quit
