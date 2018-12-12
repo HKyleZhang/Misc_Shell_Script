@@ -1,0 +1,50 @@
+#!/bin/bash
+
+read -p "Run on current folder? " answer
+if [[ "${answer}" == "y" ]] || [[ "${answer}" == "Y" ]]; then
+  dir=$(pwd)
+
+  read -p "How many clades? " clade
+  i=1
+  while [[ "${i}" -le "${clade}" ]]; do
+    read -p "What taxa are in clade${i}: " taxa
+    num=$(echo ${taxa} | grep -o ',' | wc -l)
+    num[${i}]=$((num + 1))
+
+    j=1
+    while [[ "${j}" -le "${num[${i}]}" ]]; do
+      index=$(echo "${i}${j}")
+      t[${index}]=$(echo ${taxa} | cut -d "," -f ${j})
+      ((j++))
+    done
+    ((i++))
+  done
+
+  read -p "Specify outgroup: " outgroup
+
+  mkdir ${dir}/output
+  for f in ${dir}/*fasta; do
+    name=$(basename ${f} | cut -d "." -f 1)
+    i=1
+    while [[ "${i}" -lt "${clade}" ]]; do
+      j=1
+      while [[ "${j}" -le "${num[${i}]}" ]]; do
+        k=$((i + 1))
+        while [[ "${k}" -le "${clade}" ]]; do
+          l=1
+          while [[ "${l}" -le "${num[${k}]}" ]]; do
+            A=${t[${i}${j}]}
+            B=${t[${k}${l}]}
+            cat ${f} | grep -A1 "${A}" >>${dir}/output/${name}_${A}-${B}.fasta
+            cat ${f} | grep -A1 "${B}" >>${dir}/output/${name}_${A}-${B}.fasta
+            cat ${f} | grep -A1 "${outgroup}" >>${dir}/output/${name}_${A}-${B}.fasta
+            ((l++))
+          done
+          ((k++))
+        done
+        ((j++))
+      done
+      ((i++))
+    done
+  done
+fi
