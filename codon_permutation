@@ -1,0 +1,118 @@
+#!/bin/bash
+
+arraypermute='array <- read.table("pos.array")
+seednum <- seednumber
+set.seed(seednum)
+
+for (i in 1:100){
+    seednum <- seednum + 1
+    set.seed(seednum)
+  p <- sample(array)
+  name <- paste(i,".shuffle", sep="")
+  write.table(p, file = name, quote = FALSE, row.names = FALSE, col.names = FALSE)
+}'
+
+codir=$(pwd)
+
+read -p "Start from:
+     1.Prepare files before the permutation.
+     2.Continue to permutate the alignment based on codons.
+     3.Start from the beginning:
+Choose index: " step
+if [[ -z "${step}" ]]; then
+  step = 3
+  pdata = 1
+fi
+
+if [[ "${step}" -eq 2 ]]; then
+  if [[ ! -e "${codir}/pos.result" ]]; then
+    echo -e "\nWARNING: pos.result is missing."
+    exit
+  else
+    pdataalready=$(ls ${codir} | grep "d.*.phy" | wc -l)
+    pdata=$((pdataalready + 1))
+  fi
+elif [[ "${step}" -eq 3 ]]; then
+  pdata=1
+fi
+
+if [[ "${step}" -eq 1 ]] || [[ "${step}" -eq 3 ]]; then
+  read -p "Specify file name: " fname
+
+  # Parse the file
+  lnum=$(cat ${codir}/${fname} | wc -l)
+  info=$(cat ${codir}/${fname} | sed -n "1p")
+  chr=$(echo "${info}" | cut -c 1)
+  if [[ "${chr}" == " " ]]; then
+    len=$(echo "${info}" | cut -d " " -f 3)
+  else
+    len=$(echo "${info}" | cut -d " " -f 2)
+  fi
+  cat ${codir}/${fname} | sed -n "1p" >${codir}/info
+  seqend=$((len + 10))
+  cat ${codir}/${fname} | sed -n "2,${lnum}p" | cut -c 1-10 >${codir}/taxa
+  cat ${codir}/${fname} | sed -n "2,${lnum}p" | cut -c 11-${seqend} >${codir}/aln.ori
+
+  # Divide into codon
+  rm -rf ${codir}/codon
+  mkdir ${codir}/codon
+  iter=$((len / 3))
+  i=1
+  posarray=""
+  while [[ "${i}" -le "${iter}" ]]; do
+    cdend=$((i * 3))
+    cdstart=$((cdend - 2))
+    cat ${codir}/aln.ori | cut -c ${cdstart}-${cdend} >${codir}/codon/${i}.pos
+    posarray=$(echo "${posarray} ${i}.pos")
+    ((i++))
+  done
+
+  # Permute the array of codon posisiton
+  echo "${posarray}" >${codir}/pos.array
+  seednum=2
+  until [[ $((seednum % 2)) -gt 0 ]]; do
+    seednum=${RANDOM}
+  done
+  arraypermute_temp=$(echo "${arraypermute}" | sed "s/seednumber/${seednum}/")
+  echo -e "The seed for the generation of the 100-replicate permutation data is: ${seednum}." >${codir}/impMsg.txt
+  Rscript <(echo "${arraypermute_temp}")
+  cat ${codir}/*shuffle >${codir}/pos.result
+  rm -rf ${codir}/*shuffle
+fi
+
+if [[ "${step}" -eq 2 ]] || [[ "${step}" -eq 3 ]]; then
+  # Generate permutation datasets
+  reslnum=$(cat ${codir}/pos.result | wc -l)
+  n=$(cat ${codir}/pos.result | sed -n "1p" | grep "pos" | wc -w)
+
+  cd ${codir}/codon
+
+  l=${pdata}
+  while [[ "${l}" -le "${reslnum}" ]]; do
+    if [[ -e "${codir}/codon/temp" ]] || [[ -e "${codir}/codon/temp0" ]]; then
+      rm -rf ${codir}/codon/temp ${codir}/codon/temp0
+    fi
+
+    linfo=$(cat ${codir}/pos.result | sed -n "${l}p")
+
+    pf1=$(cat ${codir}/pos.result | sed -n "${l}p" | cut -d " " -f 1)
+    pf2=$(cat ${codir}/pos.result | sed -n "${l}p" | cut -d " " -f 2)
+    paste -d "" ${pf1} ${pf2} >${codir}/codon/temp0
+
+    w=3
+    while [[ "${w}" -le "${n}" ]]; do
+      pf=$(cat ${codir}/pos.result | sed -n "${l}p" | cut -d " " -f ${w})
+      paste -d "" ${codir}/codon/temp0 ${pf} >${codir}/codon/temp
+      rm -rf ${codir}/codon/temp0
+      mv ${codir}/codon/temp ${codir}/codon/temp0
+      ((w++))
+    done
+
+    mv ${codir}/codon/temp0 ${codir}/temp0
+    paste -d "" ${codir}/taxa ${codir}/temp0 >${codir}/d${l}.part
+    cat ${codir}/info ${codir}/d${l}.part >${codir}/d${l}.phy
+    rm -rf ${codir}/d${l}.part ${codir}/temp0
+    ((l++))
+  done
+  rm -rf ${codir}/codon/ ${codir}/info ${codir}/taxa ${codir}/pos* ${codir}/aln.ori
+fi
