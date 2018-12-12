@@ -1,0 +1,230 @@
+#!/bin/bash
+
+usage="[-a] Alignment folder.
+[-t] Tree folder.
+[-b] Mean age for Baseml.
+[-m] Root calibration for MCMCTree.
+[-i] Burn-in.
+[-f] Sample frequency.
+[-s] Gathered sample size.
+[-w] Estimate one tree for all alignments (e.g. species tree).
+[-h] Display usage."
+
+baseml_Control="      seqfile = SEQFILE
+     treefile = TREEFILE
+
+      outfile = mlb       * main result file
+        noisy = 3   * 0,1,2,3: how much rubbish on the screen
+      verbose = 1   * 1: detailed output, 0: concise output
+      runmode = 0   * 0: user tree;  1: semi-automatic;  2: automatic
+                    * 3: StepwiseAddition; (4,5):PerturbationNNI
+
+        model = 4   * 0:JC69, 1:K80, 2:F81, 3:F84, 4:HKY85
+                    * 5:T92, 6:TN93, 7:REV, 8:UNREST, 9:REVu; 10:UNRESTu
+
+        Mgene = 0   * 0:rates, 1:separate; 2:diff pi, 3:diff kapa, 4:all diff
+
+*        ndata = 1
+        clock = 1   * 0:no clock, 1:clock; 2:local clock; 3:CombinedAnalysis
+    fix_kappa = 0   * 0: estimate kappa; 1: fix kappa at value below
+        kappa = 5  * initial or fixed kappa
+
+    fix_alpha = 0   * 0: estimate alpha; 1: fix alpha at value below
+        alpha = 0.5   * initial or fixed alpha, 0:infinity (constant rate)
+       Malpha = 0   * 1: different alpha's for genes, 0: one alpha
+        ncatG = 5   * # of categories in the dG, AdG, or nparK models of rates
+        nparK = 0   * rate-class models. 1:rK, 2:rK&fK, 3:rK&MK(1/K), 4:rK&MK
+
+        nhomo = 0   * 0 & 1: homogeneous, 2: kappa for branches, 3: N1, 4: N2
+        getSE = 0   * 0: don't want them, 1: want S.E.s of estimates
+ RateAncestor = 0   * (0,1,2): rates (alpha>0) or ancestral states
+
+   Small_Diff = 7e-6
+    cleandata = 1  * remove sites with ambiguity data (1:yes, 0:no)?
+*        icode = 0  * (with RateAncestor=1. try "GC" in data,model=4,Mgene=4)
+*  fix_blength = -1  * 0: ignore, -1: random, 1: initial, 2: fixed
+       method = 0  * Optimization method 0: simultaneous; 1: one branch a time"
+
+mcmctree_Control="          seed = -1
+       seqfile = SEQFILE
+      treefile = TREEFILE
+      mcmcfile = mcmc.txt
+       outfile = out.txt
+
+         ndata = QUANTITY
+       seqtype = 0    * 0: nucleotides; 1:codons; 2:AAs
+       usedata = 1    * 0: no data; 1:seq like; 2:normal approximation; 3:out.BV (in.BV)
+         clock = 2    * 1: global clock; 2: independent rates; 3: correlated rates
+       *RootAge = '<1.0'  * safe constraint on root age, used if no fossil for root.
+
+         model = 4    * 0:JC69, 1:K80, 2:F81, 3:F84, 4:HKY85
+         alpha = 0    * alpha for gamma rates at sites
+         ncatG = 5    * No. categories in discrete gamma
+
+     cleandata = 1    * remove sites with ambiguity data (1:yes, 0:no)?
+
+       BDparas = 1 1 0.1   * birth, death, sampling
+   kappa_gamma = 6 2      * gamma prior for kappa
+   alpha_gamma = 1 1      * gamma prior for alpha
+
+   rgene_gamma = 2 BETA 1    * gammaDir prior for rate for genes
+  sigma2_gamma = 1 10 1   * gammaDir prior for sigma^2     (for clock=2 or 3)
+
+      finetune = 1: .05 .05 .05 .05 .05 .05 * auto (0 or 1): times, musigma2, rates, mixing, paras, FossilErr
+
+         print = 2   * 0: no mcmc sample; 1: everything except branch rates 2: everything
+        burnin = BURNIN_setting
+      sampfreq = SAMPFREQ_setting
+       nsample = NSAMPLE_setting"
+
+
+while getopts "a:t:b:m:i:f:s:wh" opt; do
+  case ${opt} in
+  a) aln_folder=$(echo "${OPTARG}" | cut -d "/" -f 1) ;;
+  t) tree_folder=$(echo "${OPTARG}" | cut -d "/" -f 1) ;;
+  b) baseml_cali=${OPTARG} ;;
+  m) mcmc_cali=${OPTARG} ;;
+  i) BURNIN_setting=${OPTARG} ;;
+  f) SAMPFREQ_setting=${OPTARG} ;;
+  s) NSAMPLE_setting=${OPTARG} ;;
+  w) one="TRUE" ;;
+  h) echo "${usage}" ;;
+  esac
+done
+
+dir=$(pwd)
+# Check the settings
+if [[ -z "${aln_folder}" ]] || [[ -z "${aln_folder}" ]]; then
+  echo -e "\n***Message: Please specify the folders correctly."
+  echo "${usage}"
+  exit
+elif [[ ! -d "${dir}/${aln_folder}" ]] || [[ ! -d "${dir}/${tree_folder}" ]]; then
+  echo -e "\n***Message: At least one specified folder does NOT exist."
+  exit
+fi
+
+if [[ -z "${baseml_cali}" ]] || [[ -z "${mcmc_cali}" ]]; then
+  echo -e "\n***Message: The calibration flags for baseml and mcmctree have been set to the default.\n"
+  baseml_cali="1"
+  mcmc_cali='B(0.99975,1.00025)'
+fi
+
+if [[ -z "${BURNIN_setting}" ]]; then
+  BURNIN_setting=6000
+fi
+
+if [[ -z "${SAMPFREQ_setting}" ]]; then
+  SAMPFREQ_setting=30
+fi
+
+if [[ -z "${NSAMPLE_setting}" ]]; then
+  NSAMPLE_setting=20000
+fi
+
+
+# Start
+Date=$(date +%Y%m%d)
+rm -rf ${dir}/MCMCTree_analysis_${Date}
+mkdir ${dir}/MCMCTree_analysis_${Date}
+
+if [[ "${one}" == "TRUE" ]]; then
+  rm -rf ${dir}/MCMCTree_analysis_${Date}/
+  mkdir ${dir}/MCMCTree_analysis_${Date}/ ${dir}/MCMCTree_analysis_${Date}/Baseml/
+
+  seqfile="aln.phy"
+  treefile="trees.tre"
+
+  aln_num=$(ls ${dir}/${aln_folder}/*phy | wc -l)
+  random_file=$(ls ${dir}/${aln_folder}/*phy | sed -n "1p")
+  taxa_num=$(($(cat ${random_file} | wc -l) - 1))
+  for tref in ${dir}/${tree_folder}/*treefile; do
+    nw_topology -I ${tref} >>${dir}/MCMCTree_analysis_${Date}/trees.topo
+  done
+
+  ## Run Baseml
+  cat ${dir}/${aln_folder}/*phy >${dir}/MCMCTree_analysis_${Date}/Baseml/${seqfile}
+  echo "${taxa_num} ${aln_num}" >${dir}/MCMCTree_analysis_${Date}/Baseml/${treefile}
+  cat ${dir}/MCMCTree_analysis_${Date}/trees.topo | sed "s/;/\'@${baseml_cali}\';/g" >>${dir}/MCMCTree_analysis_${Date}/Baseml/${treefile}
+  echo "${baseml_Control}" | sed "s/SEQFILE/${seqfile}/" | sed "s/TREEFILE/${treefile}/" >${dir}/MCMCTree_analysis_${Date}/Baseml/baseml.ctl
+  cd ${dir}/MCMCTree_analysis_${Date}/Baseml/
+  baseml baseml.ctl 2>&1 >/dev/null
+
+  ## Calculate the approximate beta value for MCMCTree
+  cat ${dir}/MCMCTree_analysis_${Date}/Baseml/mlb | grep -A1 "Substitution" | sed "s/Substitution rate is per time unit//g" | sed "s/--//g" | sed "/^$/d" >${dir}/MCMCTree_analysis_${Date}/Baseml/beta_approximation
+  beta_approximate=$(awk '{sum+=$1}; END {printf "%.1f\n", 2 * NR/sum}' ${dir}/MCMCTree_analysis_${Date}/Baseml/beta_approximation)
+  rm -f ${dir}/MCMCTree_analysis_${Date}/Baseml/beta_approximation
+
+  ## Run MCMCTree
+  cat ${dir}/${aln_folder}/*phy >${dir}/MCMCTree_analysis_${Date}/${seqfile}
+  echo "${taxa_num} ${aln_num}" >${dir}/MCMCTree_analysis_${Date}/${treefile}
+  cat ${dir}/MCMCTree_analysis_${Date}/trees.topo | sed "s/;/\'${mcmc_cali}\';/g" >>${dir}/MCMCTree_analysis_${Date}/${treefile}
+  rm -f ${dir}/MCMCTree_analysis_${Date}/trees.topo
+  echo "${mcmctree_Control}" | sed "s/SEQFILE/${seqfile}/" |
+    sed "s/TREEFILE/${treefile}/" |
+    sed "s/QUANTITY/${aln_num}/" |
+    sed "s/BETA/${beta_approximate}/" |
+    sed "s/BURNIN_setting/${BURNIN_setting}/" |
+    sed "s/SAMPFREQ_setting/${SAMPFREQ_setting}/" |
+    sed "s/NSAMPLE_setting/${NSAMPLE_setting}/" >${dir}/MCMCTree_analysis_${Date}/mcmctree.ctl
+  cd ${dir}/MCMCTree_analysis_${Date}/
+  mcmctree mcmctree.ctl
+
+  run_control=1
+  while [[ "${run_control}" -le 1 ]]; do
+    read -t 300 -p $'\n\n\n>>>>>>>>>>>>>>>>>>>>\n  Re-run?(Y/n): ' feedback
+    if [[ "${feedback}" == "Y" ]] || [[ "${feedback}" == "y" ]]; then
+      rm -f ${dir}/MCMCTree_analysis_${Date}/SeedUsed ${dir}/MCMCTree_analysis_${Date}/out.txt ${dir}/MCMCTree_analysis_${Date}/mcmc.txt ${dir}/MCMCTree_analysis_${Date}/FigTree.tre
+      mcmctree mcmctree.ctl
+    else
+      run_control=$((run_control + 1))
+    fi
+  done
+  echo -e "\n-----< Congrats! Finished! >-----"
+else
+  for seqf in ${dir}/${aln_folder}/*phy; do
+    name=$(basename ${seqf} | cut -d "." -f 1)
+    rm -rf ${dir}/MCMCTree_analysis_${Date}/${name}/
+    mkdir ${dir}/MCMCTree_analysis_${Date}/${name}/ ${dir}/MCMCTree_analysis_${Date}/${name}/Baseml/
+
+    ## Run Baseml
+    cp -p ${seqf} ${dir}/MCMCTree_analysis_${Date}/${name}/Baseml/
+    taxa_num=$(($(cat ${seqf} | wc -l) - 1))
+    tref=$(ls ${dir}/${tree_folder}/ | grep "${name}" | sed -n "1p")
+    echo "${taxa_num} 1" >>${dir}/MCMCTree_analysis_${Date}/${name}/Baseml/${tref}
+    nw_topology -I ${dir}/${tree_folder}/${tref} | sed "s/;/\'@${baseml_cali}\';/g" >>${dir}/MCMCTree_analysis_${Date}/${name}/Baseml/${tref}
+    echo "${baseml_Control}" | sed "s/SEQFILE/${name}.phy/" | sed "s/TREEFILE/${tref}/" >${dir}/MCMCTree_analysis_${Date}/${name}/Baseml/baseml.ctl
+    cd ${dir}/MCMCTree_analysis_${Date}/${name}/Baseml/
+    baseml baseml.ctl 2>&1 >/dev/null
+
+    ## Collect the approximate beta value for MCMCTree
+    rate=$(cat ${dir}/MCMCTree_analysis_${Date}/${name}/Baseml/mlb | grep -A1 "Substitution" | sed "s/Substitution rate is per time unit//g" | sed "s/--//g" | sed "/^$/d")
+    beta_approximate=$(echo "scale=2; 2 / ${rate}" | bc)
+
+    ## Run MCMCTree
+    cp -p ${seqf} ${dir}/MCMCTree_analysis_${Date}/${name}/
+    echo "${taxa_num} 1" >>${dir}/MCMCTree_analysis_${Date}/${name}/${tref}
+    nw_topology -I ${dir}/${tree_folder}/${tref} | sed "s/;/\'${mcmc_cali}\';/g" >>${dir}/MCMCTree_analysis_${Date}/${name}/${tref}
+    echo "${mcmctree_Control}" | sed "s/SEQFILE/${name}.phy/" |
+      sed "s/TREEFILE/${tref}/" |
+      sed "s/QUANTITY/1/" |
+      sed "s/BETA/${beta_approximate}/" |
+      sed "s/BURNIN_setting/${BURNIN_setting}/" |
+      sed "s/SAMPFREQ_setting/${SAMPFREQ_setting}/" |
+      sed "s/NSAMPLE_setting/${NSAMPLE_setting}/" >${dir}/MCMCTree_analysis_${Date}/${name}/mcmctree.ctl
+    cd ${dir}/MCMCTree_analysis_${Date}/${name}/
+    mcmctree mcmctree.ctl
+
+    run_control=1
+    while [[ "${run_control}" -le 1 ]]; do
+      echo -e "\n\n\n>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\n  MCMCTree running on: ${name}"
+      read -t 300 -p $'  Re-run?(Y/n): ' feedback
+      if [[ "${feedback}" == "Y" ]] || [[ "${feedback}" == "y" ]]; then
+        rm -f ${dir}/MCMCTree_analysis_${Date}/${name}/SeedUsed ${dir}/MCMCTree_analysis_${Date}/${name}/out.txt ${dir}/MCMCTree_analysis_${Date}/${name}/mcmc.txt ${dir}/MCMCTree_analysis_${Date}/${name}/FigTree.tre
+        mcmctree mcmctree.ctl
+      else
+        run_control=$((run_control + 1))
+      fi
+    done
+  done
+  echo -e "\n-----< Congrats! Finished! >-----"
+fi
