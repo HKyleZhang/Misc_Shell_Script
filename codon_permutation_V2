@@ -1,0 +1,88 @@
+#!/bin/bash
+
+codonjackkniff() {
+  codir=${1}
+  len=${2}
+  d=${3}
+
+  codtt=$((len / 3))
+  f=$(((codtt / 32767) + 1))
+
+  iti=1
+  until [[ "${iti}" -gt 1 ]]; do
+    r=$(((${RANDOM} * f) / 2 + (codtt / 10)))
+    if [[ "${r}" -lt "$((codtt / 2))" ]]; then
+      iter=${r}
+      ((iti++))
+    fi
+  done
+
+  cp -p ${codir}/aln.ori ${codir}/aln.ori-${d}
+
+  i=1
+  while [[ "${i}" -le "${iter}" ]]; do
+    ri=1
+    until [[ "${ri}" -gt 1 ]]; do
+      r=$(((${RANDOM} * f) + 1))
+      if [[ "${r}" -lt "${codtt}" ]]; then
+        p=${r}
+        ((ri++))
+      fi
+    done
+
+    pp=$((p * 3))
+    cat ${codir}/aln.ori-${d} | cut -c 1-${pp} >${codir}/${d}p1.txt
+    cat ${codir}/aln.ori-${d} | cut -c $((pp + 1))- >${codir}/${d}p2.txt
+
+    paste -d "" ${codir}/${d}p2.txt ${codir}/${d}p1.txt >${codir}/aln.ori-${d}0
+    mv ${codir}/aln.ori-${d}0 ${codir}/aln.ori-${d}
+    rm -rf ${codir}/aln.ori-${d}0 ${codir}/${d}p1.txt ${codir}/${d}p2.txt
+    ((i++))
+  done
+  paste -d "" ${codir}/taxa ${codir}/aln.ori-${d} >${codir}/d${d}.part
+  cat ${codir}/info ${codir}/d${d}.part >${codir}/d${d}.phy
+  rm -rf ${codir}/aln.ori-${d} ${codir}/d${d}.part
+}
+
+arraypermute='array <- read.table("pos.array")
+seednum <- seednumber
+set.seed(seednum)
+
+for (i in 1:5){
+    seednum <- seednum + 1
+    set.seed(seednum)
+  p <- sample(array)
+  name <- paste(i,".shuffle", sep="")
+  write.table(p, file = name, quote = FALSE, row.names = FALSE, col.names = FALSE)
+}'
+
+codir=$(pwd)
+
+fname=$(ls ${codir} | grep ".*.phy" | sed -n "1p")
+
+# Parse the file
+lnum=$(cat ${codir}/${fname} | wc -l)
+info=$(cat ${codir}/${fname} | sed -n "1p")
+chr=$(echo "${info}" | cut -c 1)
+
+if [[ "${chr}" == " " ]]; then
+  len=$(echo "${info}" | cut -d " " -f 3)
+else
+  len=$(echo "${info}" | cut -d " " -f 2)
+fi
+
+cat ${codir}/${fname} | sed -n "1p" >${codir}/info
+seqend=$((len + 10))
+cat ${codir}/${fname} | sed -n "2,${lnum}p" | cut -c 1-10 >${codir}/taxa
+cat ${codir}/${fname} | sed -n "2,${lnum}p" | cut -c 11-${seqend} >${codir}/aln.ori
+
+# Permute codon
+i=1
+while [[ "${i}" -le 100 ]]; do
+  echo "${i}" >>${codir}/list
+  ((i++))
+done
+
+export -f codonjackkniff
+parallel --no-notice -j 4 codonjackkniff ::: ${codir} ::: ${len} :::: ${codir}/list
+rm -rf ${codir}/list ${codir}/taxa ${codir}/info ${codir}/aln.ori
