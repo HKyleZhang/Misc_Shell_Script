@@ -1,0 +1,960 @@
+#!/bin/bash
+
+# R code 1: Use beautier in babette to make xml file
+export Babette_beautier='if (!require(beautier)) devtools::install_github("richelbilderbeek/beautier")
+file <- "<arg>"
+name <- strsplit(file, ".", fixed = TRUE)[[1]][1]
+name <- paste(name, "_temp.xml", sep = "")
+create_beast2_input_file(file, name)'
+
+# R code 2: Convert the Nexus trees into Newick trees
+export Newick_convert='if (!require(ape)) install.packages("ape")
+file <- "<arg>"
+name <- strsplit(file, ".", fixed = TRUE)[[1]][1]
+name <- paste(name, ".nwk", sep = "")
+t <- read.nexus(file)
+write.tree(t, name)'
+
+# R code 3: Summarize the statistics
+Stats_summary='if (!require(foreach)) install.packages("foreach")
+if (!require(doParallel)) install.packages("doParallel")
+if (!require(tracerer)) devtools::install_github("richelbilderbeek/tracerer")
+number_cores <- detectCores()
+registerDoParallel(number_cores)
+all_log <- list.files(pattern = "*log")
+foreach(i = all_log) %dopar% {
+	name <- strsplit(i, ".", fixed = TRUE)[[1]][1]
+    name <- paste(name, "_stats.csv", sep = "")
+    f <- parse_beast_log(i)
+    f <- remove_burn_ins(f, burn_in_fraction = 0.1)
+    st.summary <- calc_summary_stats(f, sample_interval = 1)
+    write.csv(st.summary, name)
+}'
+
+# R code 4: Extract dating information
+Dating='all_files <- list.files(pattern = "*csv")
+for (i in all_files){
+	name <- strsplit(i, ".", fixed = TRUE)[[1]][1]
+    name <- paste(name, ".txt", sep = "")
+	dd <- read.csv(i)
+	TreeH <- with(dd, dd[which(X == "TreeHeight"),])
+	TreeH <- data.frame(TreeH$mean, TreeH$stderr_mean, TreeH$stdev, TreeH$hpd_interval_low, TreeH$hpd_interval_high, TreeH$ess)
+	MRCA <- with(dd, dd[grep("mrca", X),])
+	MRCA <- data.frame(MRCA$mean,MRCA$stderr_mean,MRCA$stdev,MRCA$hpd_interval_low,MRCA$hpd_interval_high,MRCA$ess)
+	a <- data.frame(MRCA, TreeH)
+	write.table(a, name, quote = F, row.names = F, col.names = F)
+}'
+
+# R code 5: Calculate the ratio MRCA:Root
+Ratio='all_files <- list.files(pattern = "*date")
+for (i in all_files){
+    name <- strsplit(i, ".", fixed = TRUE)[[1]][1]
+    name <- paste(name, ".date", sep = "")
+	dd <- read.table(i, header = T)
+	dd$Ratio <- round(dd$MRCA.mean / dd$Root.mean, digits = 4)
+    write.table(dd, name, quote = F, row.names = F)
+}'
+
+# Function 1: Hybridize the xml file from the sequence and the template for BEAST2 run
+Beauti_and_Beast() {
+  file=${1}
+  name=$(echo "${file}" | cut -d "." -f 1)
+  taxon=$(echo "${name}" | cut -d "-" -f 2)
+  if [[ "${MP_automatic}" == "True" ]]; then
+    Monoph_A=$(echo "${taxon}_Z")
+    Monoph_B=$(echo "${taxon}_W")
+  fi
+  Babette_beautier_temp=$(echo "${Babette_beautier}" | sed "s/<arg>/${file}/")
+  Rscript <(echo "${Babette_beautier_temp}") 2>&1 >/dev/null
+
+  ## Make hybrid xml file
+  file_marker=$(($(cat ${dir}/${name}_temp.xml | grep -n '</data>' | cut -d ":" -f 1) + 1))
+  cat ${dir}/${name}_temp.xml | sed -n "1,${file_marker}p" |
+    sed "s/${name}/${name}_${Template_code}/g" >${dir}/${name}_${Template_code}.xml
+  echo "${Template}" | sed "s/EXAMPLE/${name}_${Template_code}/g" |
+    sed "s/MCMC_CHAIN_L/${Chain_L}/g" |
+    sed "s/N_Trees/${N_recorded_trees}/g" |
+    sed "s/BI_taxon/${taxon}/g" |
+    sed "s/Monoph_A/${Monoph_A}/g" |
+    sed "s/Monoph_B/${Monoph_B}/g" >>${dir}/${name}_${Template_code}.xml
+  rm -f ${dir}/${name}_temp.xml
+
+  ## Run BEAST
+  beast ${name}_${Template_code}.xml 2>&1 >/dev/null
+
+  ## File sorting
+  mv ${dir}/${name}_${Template_code}.log ${dir}/log/
+  mv ${dir}/${name}_${Template_code}.trees ${dir}/trees/MCMC
+  mv ${dir}/${name}_${Template_code}.xml ${dir}/configuration
+  mv ${dir}/${name}_${Template_code}.xml.state ${dir}/state
+}
+
+# Function 2: Convert the nexus trees into newick trees
+nex_to_new() {
+  name=${1}
+  Newick_convert_temp=$(echo "${Newick_convert}" | sed "s/<arg>/${name}.nex/g")
+  Rscript <(echo "${Newick_convert_temp}") 2>&1 >/dev/null
+
+  ## File sorting
+  mv ${dir}/trees/Summarized_nexus/${name}.nwk ${dir}/trees/Summarized_newick/
+}
+
+# Template collection
+## bModelTest-Strict clock-Yule process
+## Template_code: SbC1P1
+TC[1]='
+<map name="Uniform" >beast.math.distributions.Uniform</map>
+<map name="Exponential" >beast.math.distributions.Exponential</map>
+<map name="LogNormal" >beast.math.distributions.LogNormalDistributionModel</map>
+<map name="Normal" >beast.math.distributions.Normal</map>
+<map name="Beta" >beast.math.distributions.Beta</map>
+<map name="Gamma" >beast.math.distributions.Gamma</map>
+<map name="LaplaceDistribution" >beast.math.distributions.LaplaceDistribution</map>
+<map name="prior" >beast.math.distributions.Prior</map>
+<map name="InverseGamma" >beast.math.distributions.InverseGamma</map>
+<map name="OneOnX" >beast.math.distributions.OneOnX</map>
+
+
+<run id="mcmc" spec="MCMC" chainLength="MCMC_CHAIN_L">
+    <state id="state" storeEvery="5000">
+        <tree id="Tree.t:EXAMPLE" name="stateNode">
+            <taxonset id="TaxonSet.EXAMPLE" spec="TaxonSet">
+                <alignment idref="EXAMPLE"/>
+            </taxonset>
+        </tree>
+        <parameter id="birthRate.t:EXAMPLE" name="stateNode">1.0</parameter>
+        <stateNode id="BMT_ModelIndicator.s:EXAMPLE" spec="parameter.IntegerParameter" lower="0" upper="5">5</stateNode>
+        <parameter id="BMT_Rates.s:EXAMPLE" dimension="6" lower="0.01" name="stateNode" upper="100.0">1.0</parameter>
+        <parameter id="BMT_gammaShape.s:EXAMPLE" name="stateNode">1.0</parameter>
+        <parameter id="BMT_ProportionInvariable.s:EXAMPLE" lower="0.0" name="stateNode" upper="1.0">0.1</parameter>
+        <stateNode id="hasInvariableSites.s:EXAMPLE" spec="parameter.IntegerParameter">1</stateNode>
+        <stateNode id="hasGammaRates.s:EXAMPLE" spec="parameter.IntegerParameter">1</stateNode>
+        <stateNode id="hasEqualFreqs.s:EXAMPLE" spec="parameter.BooleanParameter">false</stateNode>
+        <parameter id="BMT_mutationRate.s:EXAMPLE" name="stateNode">1.0</parameter>
+    </state>
+
+    <init id="RandomTree.t:EXAMPLE" spec="beast.evolution.tree.RandomTree" estimate="false" initial="@Tree.t:EXAMPLE" taxa="@EXAMPLE">
+        <populationModel id="ConstantPopulation0.t:EXAMPLE" spec="ConstantPopulation">
+            <parameter id="randomPopSize.t:EXAMPLE" name="popSize">1.0</parameter>
+        </populationModel>
+    </init>
+
+    <distribution id="posterior" spec="util.CompoundDistribution">
+        <distribution id="prior" spec="util.CompoundDistribution">
+            <distribution id="YuleModel.t:EXAMPLE" spec="beast.evolution.speciation.YuleModel" birthDiffRate="@birthRate.t:EXAMPLE" tree="@Tree.t:EXAMPLE"/>
+            <distribution id="BMT_PropInvariablePrior.s:EXAMPLE" spec="beast.math.distributions.BMTPrior" count="@hasInvariableSites.s:EXAMPLE" x="@BMT_ProportionInvariable.s:EXAMPLE">
+                <Beta id="Beta.0" name="distr">
+                    <parameter id="RealParameter.1" lower="0.0" name="alpha" upper="0.0">1.0</parameter>
+                    <parameter id="RealParameter.2" lower="0.0" name="beta" upper="0.0">4.0</parameter>
+                </Beta>
+            </distribution>
+            <distribution id="BMT_RatesPrior.s:EXAMPLE" spec="beast.math.distributions.NucleotideRevJumpSubstModelRatePrior" modelIndicator="@BMT_ModelIndicator.s:EXAMPLE" x="@BMT_Rates.s:EXAMPLE">
+                <substModel id="RevJump.s:EXAMPLE" spec="NucleotideRevJumpSubstModel" modelIndicator="@BMT_ModelIndicator.s:EXAMPLE" rates="@BMT_Rates.s:EXAMPLE">
+                    <frequencies id="BMTfreqs.s:EXAMPLE" spec="ModelFrequencies" data="@EXAMPLE" hasEqualFreqs="@hasEqualFreqs.s:EXAMPLE"/>
+                </substModel>
+                <Exponential id="BMT_RatesPrior.s:EXAMPLEx" name="distr"/>
+            </distribution>
+            <distribution id="BMT_GammaShapePrior.s:EXAMPLE" spec="beast.math.distributions.BMTPrior" count="@hasGammaRates.s:EXAMPLE" x="@BMT_gammaShape.s:EXAMPLE">
+                <Exponential id="Exponential.0" name="distr">
+                    <parameter id="RealParameter.0" estimate="false" name="mean">1.0</parameter>
+                </Exponential>
+            </distribution>
+            <prior id="YuleBirthRatePrior.t:EXAMPLE" name="distribution" x="@birthRate.t:EXAMPLE">
+                <Uniform id="Uniform.1" name="distr" upper="Infinity"/>
+            </prior>
+            <distribution id="BI_taxon.prior" spec="beast.math.distributions.MRCAPrior" monophyletic="true" tree="@Tree.t:EXAMPLE">
+                <taxonset id="BI_taxon" spec="TaxonSet">
+                    <taxon id="Monoph_A" spec="Taxon"/>
+                    <taxon id="Monoph_B" spec="Taxon"/>
+                </taxonset>
+            </distribution>
+        </distribution>
+        <distribution id="likelihood" spec="util.CompoundDistribution" useThreads="true">
+            <distribution id="treeLikelihood.EXAMPLE" spec="ThreadedTreeLikelihood" data="@EXAMPLE" tree="@Tree.t:EXAMPLE">
+                <siteModel id="BEASTModelTest.s:EXAMPLE" spec="BEASTModelTestSiteModel" gammaCategoryCount="4" hasGammaRates="@hasGammaRates.s:EXAMPLE" hasInvariantSites="@hasInvariableSites.s:EXAMPLE" mutationRate="@BMT_mutationRate.s:EXAMPLE" proportionInvariant="@BMT_ProportionInvariable.s:EXAMPLE" shape="@BMT_gammaShape.s:EXAMPLE" substModel="@RevJump.s:EXAMPLE"/>
+                <branchRateModel id="StrictClock.c:EXAMPLE" spec="beast.evolution.branchratemodel.StrictClockModel">
+                    <parameter id="clockRate.c:EXAMPLE" estimate="false" name="clock.rate">1.0</parameter>
+                </branchRateModel>
+            </distribution>
+        </distribution>
+    </distribution>
+
+    <operator id="YuleBirthRateScaler.t:EXAMPLE" spec="ScaleOperator" parameter="@birthRate.t:EXAMPLE" scaleFactor="0.75" weight="3.0"/>
+
+    <operator id="YuleModelTreeScaler.t:EXAMPLE" spec="ScaleOperator" scaleFactor="0.5" tree="@Tree.t:EXAMPLE" weight="3.0"/>
+
+    <operator id="YuleModelTreeRootScaler.t:EXAMPLE" spec="ScaleOperator" rootOnly="true" scaleFactor="0.5" tree="@Tree.t:EXAMPLE" weight="3.0"/>
+
+    <operator id="YuleModelUniformOperator.t:EXAMPLE" spec="Uniform" tree="@Tree.t:EXAMPLE" weight="30.0"/>
+
+    <operator id="YuleModelSubtreeSlide.t:EXAMPLE" spec="SubtreeSlide" tree="@Tree.t:EXAMPLE" weight="15.0"/>
+
+    <operator id="YuleModelNarrow.t:EXAMPLE" spec="Exchange" tree="@Tree.t:EXAMPLE" weight="15.0"/>
+
+    <operator id="YuleModelWide.t:EXAMPLE" spec="Exchange" isNarrow="false" tree="@Tree.t:EXAMPLE" weight="3.0"/>
+
+    <operator id="YuleModelWilsonBalding.t:EXAMPLE" spec="WilsonBalding" tree="@Tree.t:EXAMPLE" weight="3.0"/>
+
+    <operator id="BMT_ModelTestOperator.s:EXAMPLE" spec="BMTMergeSplitOperator" modelIndicator="@BMT_ModelIndicator.s:EXAMPLE" rates="@BMT_Rates.s:EXAMPLE" substModel="@RevJump.s:EXAMPLE" weight="1.0"/>
+
+    <operator id="BMT_Ratescaler.s:EXAMPLE" spec="BMTExchangeOperator" delta="0.15" modelIndicator="@BMT_ModelIndicator.s:EXAMPLE" rates="@BMT_Rates.s:EXAMPLE" substModel="@RevJump.s:EXAMPLE" weight="1.0"/>
+
+    <operator id="BMT_gammaShapeScaler.s:EXAMPLE" spec="BMTScaleOperator" count="@hasGammaRates.s:EXAMPLE" parameter="@BMT_gammaShape.s:EXAMPLE" scaleFactor="0.5" weight="0.5"/>
+
+    <operator id="BMT_ProportionInvariableScaler.s:EXAMPLE" spec="BMTScaleOperator" count="@hasInvariableSites.s:EXAMPLE" parameter="@BMT_ProportionInvariable.s:EXAMPLE" scaleFactor="0.5" weight="0.5"/>
+
+    <operator id="BMT_hasGammaRatesFlipper.s:EXAMPLE" spec="BMTBirthDeathOperator" count="@hasGammaRates.s:EXAMPLE" rates="@BMT_gammaShape.s:EXAMPLE" weight="0.1"/>
+
+    <operator id="BMT_hasInvariableSitesFlipper.s:EXAMPLE" spec="BMTBirthDeathOperator" count="@hasInvariableSites.s:EXAMPLE" rates="@BMT_ProportionInvariable.s:EXAMPLE" weight="0.1"/>
+
+    <operator id="BMT_FreqsFlipOperator.s:EXAMPLE" spec="BitFlipOperator" parameter="@hasEqualFreqs.s:EXAMPLE" weight="0.1"/>
+
+    <operator id="FixMeanMutationRatesOperator" spec="DeltaExchangeOperator" delta="0.75" weight="2.0">
+        <parameter idref="BMT_mutationRate.s:EXAMPLE"/>
+        <weightvector id="weightparameter" spec="parameter.IntegerParameter" estimate="false" lower="0" upper="0">1758</weightvector>
+    </operator>
+
+    <logger id="tracelog" fileName="EXAMPLE.log" logEvery="1000" model="@posterior" sanitiseHeaders="true" sort="smart">
+        <log idref="posterior"/>
+        <log idref="likelihood"/>
+        <log idref="prior"/>
+        <log idref="treeLikelihood.EXAMPLE"/>
+        <log id="TreeHeight.t:EXAMPLE" spec="beast.evolution.tree.TreeHeightLogger" tree="@Tree.t:EXAMPLE"/>
+        <log idref="YuleModel.t:EXAMPLE"/>
+        <log idref="birthRate.t:EXAMPLE"/>
+        <log idref="RevJump.s:EXAMPLE"/>
+        <log idref="BMT_ModelIndicator.s:EXAMPLE"/>
+        <log idref="BMT_gammaShape.s:EXAMPLE"/>
+        <log idref="BMT_ProportionInvariable.s:EXAMPLE"/>
+        <log idref="hasGammaRates.s:EXAMPLE"/>
+        <log idref="hasInvariableSites.s:EXAMPLE"/>
+        <log id="ActivePropInvariable.s:EXAMPLE" spec="beast.util.Script" argnames="BMT_ProportionInvariable hasInvariableSites" expression="BMT_ProportionInvariable * hasInvariableSites">
+            <x idref="BMT_ProportionInvariable.s:EXAMPLE"/>
+            <x idref="hasInvariableSites.s:EXAMPLE"/>
+        </log>
+        <log id="ActiveGammaShape.s:EXAMPLE" spec="beast.util.Script" argnames="BMT_gammaShape hasGammaRates" expression="BMT_gammaShape * hasGammaRates">
+            <x idref="BMT_gammaShape.s:EXAMPLE"/>
+            <x idref="hasGammaRates.s:EXAMPLE"/>
+        </log>
+        <log idref="hasEqualFreqs.s:EXAMPLE"/>
+        <log idref="BMT_mutationRate.s:EXAMPLE"/>
+        <log idref="BI_taxon.prior"/>
+    </logger>
+
+    <logger id="screenlog" logEvery="1000">
+        <log idref="posterior"/>
+        <log id="ESS.0" spec="util.ESS" arg="@posterior"/>
+        <log idref="likelihood"/>
+        <log idref="prior"/>
+    </logger>
+
+    <logger id="treelog.t:EXAMPLE" fileName="$(tree).trees" logEvery="N_Trees" mode="tree">
+        <log id="TreeWithMetaDataLogger.t:EXAMPLE" spec="beast.evolution.tree.TreeWithMetaDataLogger" tree="@Tree.t:EXAMPLE"/>
+    </logger>
+
+</run>
+
+</beast>'
+
+## bModelTest-Strict clock-Birth-Death
+## Template_code: SbC1P2
+TC[2]='
+<map name="Uniform" >beast.math.distributions.Uniform</map>
+<map name="Exponential" >beast.math.distributions.Exponential</map>
+<map name="LogNormal" >beast.math.distributions.LogNormalDistributionModel</map>
+<map name="Normal" >beast.math.distributions.Normal</map>
+<map name="Beta" >beast.math.distributions.Beta</map>
+<map name="Gamma" >beast.math.distributions.Gamma</map>
+<map name="LaplaceDistribution" >beast.math.distributions.LaplaceDistribution</map>
+<map name="prior" >beast.math.distributions.Prior</map>
+<map name="InverseGamma" >beast.math.distributions.InverseGamma</map>
+<map name="OneOnX" >beast.math.distributions.OneOnX</map>
+
+
+<run id="mcmc" spec="MCMC" chainLength="MCMC_CHAIN_L">
+    <state id="state" storeEvery="5000">
+        <tree id="Tree.t:EXAMPLE" name="stateNode">
+            <taxonset id="TaxonSet.EXAMPLE" spec="TaxonSet">
+                <alignment idref="EXAMPLE"/>
+            </taxonset>
+        </tree>
+        <stateNode id="BMT_ModelIndicator.s:EXAMPLE" spec="parameter.IntegerParameter" lower="0" upper="5">5</stateNode>
+        <parameter id="BMT_Rates.s:EXAMPLE" dimension="6" lower="0.01" name="stateNode" upper="100.0">1.0</parameter>
+        <parameter id="BMT_gammaShape.s:EXAMPLE" name="stateNode">1.0</parameter>
+        <parameter id="BMT_ProportionInvariable.s:EXAMPLE" lower="0.0" name="stateNode" upper="1.0">0.1</parameter>
+        <stateNode id="hasInvariableSites.s:EXAMPLE" spec="parameter.IntegerParameter">1</stateNode>
+        <stateNode id="hasGammaRates.s:EXAMPLE" spec="parameter.IntegerParameter">1</stateNode>
+        <stateNode id="hasEqualFreqs.s:EXAMPLE" spec="parameter.BooleanParameter">false</stateNode>
+        <parameter id="BMT_mutationRate.s:EXAMPLE" name="stateNode">1.0</parameter>
+        <parameter id="BDBirthRate.t:EXAMPLE" lower="0.0" name="stateNode" upper="10000.0">1.0</parameter>
+        <parameter id="BDDeathRate.t:EXAMPLE" lower="0.0" name="stateNode" upper="1.0">0.5</parameter>
+    </state>
+
+    <init id="RandomTree.t:EXAMPLE" spec="beast.evolution.tree.RandomTree" estimate="false" initial="@Tree.t:EXAMPLE" taxa="@EXAMPLE">
+        <populationModel id="ConstantPopulation0.t:EXAMPLE" spec="ConstantPopulation">
+            <parameter id="randomPopSize.t:EXAMPLE" name="popSize">1.0</parameter>
+        </populationModel>
+    </init>
+
+    <distribution id="posterior" spec="util.CompoundDistribution">
+        <distribution id="prior" spec="util.CompoundDistribution">
+            <distribution id="BirthDeath.t:EXAMPLE" spec="beast.evolution.speciation.BirthDeathGernhard08Model" birthDiffRate="@BDBirthRate.t:EXAMPLE" relativeDeathRate="@BDDeathRate.t:EXAMPLE" tree="@Tree.t:EXAMPLE"/>
+            <prior id="BirthRatePrior.t:EXAMPLE" name="distribution" x="@BDBirthRate.t:EXAMPLE">
+                <Uniform id="Uniform.3" name="distr" upper="1000.0"/>
+            </prior>
+            <prior id="DeathRatePrior.t:EXAMPLE" name="distribution" x="@BDDeathRate.t:EXAMPLE">
+                <Uniform id="Uniform.4" name="distr"/>
+            </prior>
+            <distribution id="BMT_PropInvariablePrior.s:EXAMPLE" spec="beast.math.distributions.BMTPrior" count="@hasInvariableSites.s:EXAMPLE" x="@BMT_ProportionInvariable.s:EXAMPLE">
+                <Beta id="Beta.0" name="distr">
+                    <parameter id="RealParameter.1" lower="0.0" name="alpha" upper="0.0">1.0</parameter>
+                    <parameter id="RealParameter.2" lower="0.0" name="beta" upper="0.0">4.0</parameter>
+                </Beta>
+            </distribution>
+            <distribution id="BMT_RatesPrior.s:EXAMPLE" spec="beast.math.distributions.NucleotideRevJumpSubstModelRatePrior" modelIndicator="@BMT_ModelIndicator.s:EXAMPLE" x="@BMT_Rates.s:EXAMPLE">
+                <substModel id="RevJump.s:EXAMPLE" spec="NucleotideRevJumpSubstModel" modelIndicator="@BMT_ModelIndicator.s:EXAMPLE" rates="@BMT_Rates.s:EXAMPLE">
+                    <frequencies id="BMTfreqs.s:EXAMPLE" spec="ModelFrequencies" data="@EXAMPLE" hasEqualFreqs="@hasEqualFreqs.s:EXAMPLE"/>
+                </substModel>
+                <Exponential id="BMT_RatesPrior.s:EXAMPLEx" name="distr"/>
+            </distribution>
+            <distribution id="BMT_GammaShapePrior.s:EXAMPLE" spec="beast.math.distributions.BMTPrior" count="@hasGammaRates.s:EXAMPLE" x="@BMT_gammaShape.s:EXAMPLE">
+                <Exponential id="Exponential.0" name="distr">
+                    <parameter id="RealParameter.0" estimate="false" name="mean">1.0</parameter>
+                </Exponential>
+            </distribution>
+            <distribution id="BI_taxon.prior" spec="beast.math.distributions.MRCAPrior" monophyletic="true" tree="@Tree.t:EXAMPLE">
+                <taxonset id="BI_taxon" spec="TaxonSet">
+                    <taxon id="Monoph_A" spec="Taxon"/>
+                    <taxon id="Monoph_B" spec="Taxon"/>
+                </taxonset>
+            </distribution>
+        </distribution>
+        <distribution id="likelihood" spec="util.CompoundDistribution" useThreads="true">
+            <distribution id="treeLikelihood.EXAMPLE" spec="ThreadedTreeLikelihood" data="@EXAMPLE" tree="@Tree.t:EXAMPLE">
+                <siteModel id="BEASTModelTest.s:EXAMPLE" spec="BEASTModelTestSiteModel" gammaCategoryCount="4" hasGammaRates="@hasGammaRates.s:EXAMPLE" hasInvariantSites="@hasInvariableSites.s:EXAMPLE" mutationRate="@BMT_mutationRate.s:EXAMPLE" proportionInvariant="@BMT_ProportionInvariable.s:EXAMPLE" shape="@BMT_gammaShape.s:EXAMPLE" substModel="@RevJump.s:EXAMPLE"/>
+                <branchRateModel id="StrictClock.c:EXAMPLE" spec="beast.evolution.branchratemodel.StrictClockModel">
+                    <parameter id="clockRate.c:EXAMPLE" estimate="false" name="clock.rate">1.0</parameter>
+                </branchRateModel>
+            </distribution>
+        </distribution>
+    </distribution>
+
+    <operator id="BMT_ModelTestOperator.s:EXAMPLE" spec="BMTMergeSplitOperator" modelIndicator="@BMT_ModelIndicator.s:EXAMPLE" rates="@BMT_Rates.s:EXAMPLE" substModel="@RevJump.s:EXAMPLE" weight="1.0"/>
+
+    <operator id="BMT_Ratescaler.s:EXAMPLE" spec="BMTExchangeOperator" delta="0.15" modelIndicator="@BMT_ModelIndicator.s:EXAMPLE" rates="@BMT_Rates.s:EXAMPLE" substModel="@RevJump.s:EXAMPLE" weight="1.0"/>
+
+    <operator id="BMT_gammaShapeScaler.s:EXAMPLE" spec="BMTScaleOperator" count="@hasGammaRates.s:EXAMPLE" parameter="@BMT_gammaShape.s:EXAMPLE" scaleFactor="0.5" weight="0.5"/>
+
+    <operator id="BMT_ProportionInvariableScaler.s:EXAMPLE" spec="BMTScaleOperator" count="@hasInvariableSites.s:EXAMPLE" parameter="@BMT_ProportionInvariable.s:EXAMPLE" scaleFactor="0.5" weight="0.5"/>
+
+    <operator id="BMT_hasGammaRatesFlipper.s:EXAMPLE" spec="BMTBirthDeathOperator" count="@hasGammaRates.s:EXAMPLE" rates="@BMT_gammaShape.s:EXAMPLE" weight="0.1"/>
+
+    <operator id="BMT_hasInvariableSitesFlipper.s:EXAMPLE" spec="BMTBirthDeathOperator" count="@hasInvariableSites.s:EXAMPLE" rates="@BMT_ProportionInvariable.s:EXAMPLE" weight="0.1"/>
+
+    <operator id="BMT_FreqsFlipOperator.s:EXAMPLE" spec="BitFlipOperator" parameter="@hasEqualFreqs.s:EXAMPLE" weight="0.1"/>
+
+    <operator id="FixMeanMutationRatesOperator" spec="DeltaExchangeOperator" delta="0.75" weight="2.0">
+        <parameter idref="BMT_mutationRate.s:EXAMPLE"/>
+        <weightvector id="weightparameter" spec="parameter.IntegerParameter" estimate="false" lower="0" upper="0">1758</weightvector>
+    </operator>
+
+    <operator id="BirthDeathTreeScaler.t:EXAMPLE" spec="ScaleOperator" scaleFactor="0.5" tree="@Tree.t:EXAMPLE" weight="3.0"/>
+
+    <operator id="BirthDeathTreeRootScaler.t:EXAMPLE" spec="ScaleOperator" rootOnly="true" scaleFactor="0.5" tree="@Tree.t:EXAMPLE" weight="3.0"/>
+
+    <operator id="BirthDeathUniformOperator.t:EXAMPLE" spec="Uniform" tree="@Tree.t:EXAMPLE" weight="30.0"/>
+
+    <operator id="BirthDeathSubtreeSlide.t:EXAMPLE" spec="SubtreeSlide" tree="@Tree.t:EXAMPLE" weight="15.0"/>
+
+    <operator id="BirthDeathNarrow.t:EXAMPLE" spec="Exchange" tree="@Tree.t:EXAMPLE" weight="15.0"/>
+
+    <operator id="BirthDeathWide.t:EXAMPLE" spec="Exchange" isNarrow="false" tree="@Tree.t:EXAMPLE" weight="3.0"/>
+
+    <operator id="BirthDeathWilsonBalding.t:EXAMPLE" spec="WilsonBalding" tree="@Tree.t:EXAMPLE" weight="3.0"/>
+
+    <operator id="BirthRateScaler.t:EXAMPLE" spec="ScaleOperator" parameter="@BDBirthRate.t:EXAMPLE" scaleFactor="0.75" weight="3.0"/>
+
+    <operator id="DeathRateScaler.t:EXAMPLE" spec="ScaleOperator" parameter="@BDDeathRate.t:EXAMPLE" scaleFactor="0.75" weight="3.0"/>
+
+    <logger id="tracelog" fileName="EXAMPLE.log" logEvery="1000" model="@posterior" sanitiseHeaders="true" sort="smart">
+        <log idref="posterior"/>
+        <log idref="likelihood"/>
+        <log idref="prior"/>
+        <log idref="treeLikelihood.EXAMPLE"/>
+        <log id="TreeHeight.t:EXAMPLE" spec="beast.evolution.tree.TreeHeightLogger" tree="@Tree.t:EXAMPLE"/>
+        <log idref="RevJump.s:EXAMPLE"/>
+        <log idref="BMT_ModelIndicator.s:EXAMPLE"/>
+        <log idref="BMT_gammaShape.s:EXAMPLE"/>
+        <log idref="BMT_ProportionInvariable.s:EXAMPLE"/>
+        <log idref="hasGammaRates.s:EXAMPLE"/>
+        <log idref="hasInvariableSites.s:EXAMPLE"/>
+        <log id="ActivePropInvariable.s:EXAMPLE" spec="beast.util.Script" argnames="BMT_ProportionInvariable hasInvariableSites" expression="BMT_ProportionInvariable * hasInvariableSites">
+            <x idref="BMT_ProportionInvariable.s:EXAMPLE"/>
+            <x idref="hasInvariableSites.s:EXAMPLE"/>
+        </log>
+        <log id="ActiveGammaShape.s:EXAMPLE" spec="beast.util.Script" argnames="BMT_gammaShape hasGammaRates" expression="BMT_gammaShape * hasGammaRates">
+            <x idref="BMT_gammaShape.s:EXAMPLE"/>
+            <x idref="hasGammaRates.s:EXAMPLE"/>
+        </log>
+        <log idref="hasEqualFreqs.s:EXAMPLE"/>
+        <log idref="BMT_mutationRate.s:EXAMPLE"/>
+        <log idref="BirthDeath.t:EXAMPLE"/>
+        <log idref="BDBirthRate.t:EXAMPLE"/>
+        <log idref="BDDeathRate.t:EXAMPLE"/>
+        <log idref="BI_taxon.prior"/>
+    </logger>
+
+    <logger id="screenlog" logEvery="1000">
+        <log idref="posterior"/>
+        <log id="ESS.0" spec="util.ESS" arg="@posterior"/>
+        <log idref="likelihood"/>
+        <log idref="prior"/>
+    </logger>
+
+    <logger id="treelog.t:EXAMPLE" fileName="$(tree).trees" logEvery="N_Trees" mode="tree">
+        <log id="TreeWithMetaDataLogger.t:EXAMPLE" spec="beast.evolution.tree.TreeWithMetaDataLogger" tree="@Tree.t:EXAMPLE"/>
+    </logger>
+
+</run>
+
+</beast>'
+
+## bModelTest-Relaxed exponential clock-Yule process
+## Template_code: SbC2P1
+
+## bModelTest-Relaxed exponential clock-Birth-Death
+## Template_code: SbC2P2
+
+## bModelTest-Relaxed log normal clock-Yule process
+## Template_code: SbC3P1
+TC[5]='
+<map name="Uniform" >beast.math.distributions.Uniform</map>
+<map name="Exponential" >beast.math.distributions.Exponential</map>
+<map name="LogNormal" >beast.math.distributions.LogNormalDistributionModel</map>
+<map name="Normal" >beast.math.distributions.Normal</map>
+<map name="Beta" >beast.math.distributions.Beta</map>
+<map name="Gamma" >beast.math.distributions.Gamma</map>
+<map name="LaplaceDistribution" >beast.math.distributions.LaplaceDistribution</map>
+<map name="prior" >beast.math.distributions.Prior</map>
+<map name="InverseGamma" >beast.math.distributions.InverseGamma</map>
+<map name="OneOnX" >beast.math.distributions.OneOnX</map>
+
+
+<run id="mcmc" spec="MCMC" chainLength="MCMC_CHAIN_L">
+    <state id="state" storeEvery="5000">
+        <tree id="Tree.t:EXAMPLE" name="stateNode">
+            <taxonset id="TaxonSet.EXAMPLE" spec="TaxonSet">
+                <alignment idref="EXAMPLE"/>
+            </taxonset>
+        </tree>
+        <parameter id="birthRate.t:EXAMPLE" name="stateNode">1.0</parameter>
+        <stateNode id="BMT_ModelIndicator.s:EXAMPLE" spec="parameter.IntegerParameter" lower="0" upper="5">5</stateNode>
+        <parameter id="BMT_Rates.s:EXAMPLE" dimension="6" lower="0.01" name="stateNode" upper="100.0">1.0</parameter>
+        <parameter id="BMT_gammaShape.s:EXAMPLE" name="stateNode">1.0</parameter>
+        <parameter id="BMT_ProportionInvariable.s:EXAMPLE" lower="0.0" name="stateNode" upper="1.0">0.1</parameter>
+        <stateNode id="hasInvariableSites.s:EXAMPLE" spec="parameter.IntegerParameter">1</stateNode>
+        <stateNode id="hasGammaRates.s:EXAMPLE" spec="parameter.IntegerParameter">1</stateNode>
+        <stateNode id="hasEqualFreqs.s:EXAMPLE" spec="parameter.BooleanParameter">false</stateNode>
+        <parameter id="BMT_mutationRate.s:EXAMPLE" name="stateNode">1.0</parameter>
+        <parameter id="ucldStdev.c:EXAMPLE" lower="0.0" name="stateNode">0.1</parameter>
+        <stateNode id="rateCategories.c:EXAMPLE" spec="parameter.IntegerParameter" dimension="4">1</stateNode>
+    </state>
+
+    <init id="RandomTree.t:EXAMPLE" spec="beast.evolution.tree.RandomTree" estimate="false" initial="@Tree.t:EXAMPLE" taxa="@EXAMPLE">
+        <populationModel id="ConstantPopulation0.t:EXAMPLE" spec="ConstantPopulation">
+            <parameter id="randomPopSize.t:EXAMPLE" name="popSize">1.0</parameter>
+        </populationModel>
+    </init>
+
+    <distribution id="posterior" spec="util.CompoundDistribution">
+        <distribution id="prior" spec="util.CompoundDistribution">
+            <distribution id="YuleModel.t:EXAMPLE" spec="beast.evolution.speciation.YuleModel" birthDiffRate="@birthRate.t:EXAMPLE" tree="@Tree.t:EXAMPLE"/>
+            <distribution id="BMT_PropInvariablePrior.s:EXAMPLE" spec="beast.math.distributions.BMTPrior" count="@hasInvariableSites.s:EXAMPLE" x="@BMT_ProportionInvariable.s:EXAMPLE">
+                <Beta id="Beta.0" name="distr">
+                    <parameter id="RealParameter.1" lower="0.0" name="alpha" upper="0.0">1.0</parameter>
+                    <parameter id="RealParameter.2" lower="0.0" name="beta" upper="0.0">4.0</parameter>
+                </Beta>
+            </distribution>
+            <distribution id="BMT_RatesPrior.s:EXAMPLE" spec="beast.math.distributions.NucleotideRevJumpSubstModelRatePrior" modelIndicator="@BMT_ModelIndicator.s:EXAMPLE" x="@BMT_Rates.s:EXAMPLE">
+                <substModel id="RevJump.s:EXAMPLE" spec="NucleotideRevJumpSubstModel" modelIndicator="@BMT_ModelIndicator.s:EXAMPLE" rates="@BMT_Rates.s:EXAMPLE">
+                    <frequencies id="BMTfreqs.s:EXAMPLE" spec="ModelFrequencies" data="@EXAMPLE" hasEqualFreqs="@hasEqualFreqs.s:EXAMPLE"/>
+                </substModel>
+                <Exponential id="BMT_RatesPrior.s:EXAMPLEx" name="distr"/>
+            </distribution>
+            <distribution id="BMT_GammaShapePrior.s:EXAMPLE" spec="beast.math.distributions.BMTPrior" count="@hasGammaRates.s:EXAMPLE" x="@BMT_gammaShape.s:EXAMPLE">
+                <Exponential id="Exponential.0" name="distr">
+                    <parameter id="RealParameter.0" estimate="false" name="mean">1.0</parameter>
+                </Exponential>
+            </distribution>
+            <prior id="YuleBirthRatePrior.t:EXAMPLE" name="distribution" x="@birthRate.t:EXAMPLE">
+                <Uniform id="Uniform.1" name="distr" upper="Infinity"/>
+            </prior>
+            <prior id="ucldStdevPrior.c:EXAMPLE" name="distribution" x="@ucldStdev.c:EXAMPLE">
+                <Gamma id="Gamma.0" name="distr">
+                    <parameter id="RealParameter.5" estimate="false" name="alpha">0.5396</parameter>
+                    <parameter id="RealParameter.6" estimate="false" name="beta">0.3819</parameter>
+                </Gamma>
+            </prior>
+            <distribution id="BI_taxon.prior" spec="beast.math.distributions.MRCAPrior" monophyletic="true" tree="@Tree.t:EXAMPLE">
+                <taxonset id="BI_taxon" spec="TaxonSet">
+                    <taxon id="Monoph_A" spec="Taxon"/>
+                    <taxon id="Monoph_B" spec="Taxon"/>
+                </taxonset>
+            </distribution>
+        </distribution>
+        <distribution id="likelihood" spec="util.CompoundDistribution" useThreads="true">
+            <distribution id="treeLikelihood.EXAMPLE" spec="ThreadedTreeLikelihood" data="@EXAMPLE" tree="@Tree.t:EXAMPLE">
+                <siteModel id="BEASTModelTest.s:EXAMPLE" spec="BEASTModelTestSiteModel" gammaCategoryCount="4" hasGammaRates="@hasGammaRates.s:EXAMPLE" hasInvariantSites="@hasInvariableSites.s:EXAMPLE" mutationRate="@BMT_mutationRate.s:EXAMPLE" proportionInvariant="@BMT_ProportionInvariable.s:EXAMPLE" shape="@BMT_gammaShape.s:EXAMPLE" substModel="@RevJump.s:EXAMPLE"/>
+                <branchRateModel id="RelaxedClock.c:EXAMPLE" spec="beast.evolution.branchratemodel.UCRelaxedClockModel" rateCategories="@rateCategories.c:EXAMPLE" tree="@Tree.t:EXAMPLE">
+                    <LogNormal id="LogNormalDistributionModel.c:EXAMPLE" S="@ucldStdev.c:EXAMPLE" meanInRealSpace="true" name="distr">
+                        <parameter id="RealParameter.4" estimate="false" lower="0.0" name="M" upper="1.0">1.0</parameter>
+                    </LogNormal>
+                    <parameter id="ucldMean.c:EXAMPLE" estimate="false" name="clock.rate">1.0</parameter>
+                </branchRateModel>
+            </distribution>
+        </distribution>
+    </distribution>
+
+    <operator id="YuleBirthRateScaler.t:EXAMPLE" spec="ScaleOperator" parameter="@birthRate.t:EXAMPLE" scaleFactor="0.75" weight="3.0"/>
+
+    <operator id="YuleModelTreeScaler.t:EXAMPLE" spec="ScaleOperator" scaleFactor="0.5" tree="@Tree.t:EXAMPLE" weight="3.0"/>
+
+    <operator id="YuleModelTreeRootScaler.t:EXAMPLE" spec="ScaleOperator" rootOnly="true" scaleFactor="0.5" tree="@Tree.t:EXAMPLE" weight="3.0"/>
+
+    <operator id="YuleModelUniformOperator.t:EXAMPLE" spec="Uniform" tree="@Tree.t:EXAMPLE" weight="30.0"/>
+
+    <operator id="YuleModelSubtreeSlide.t:EXAMPLE" spec="SubtreeSlide" tree="@Tree.t:EXAMPLE" weight="15.0"/>
+
+    <operator id="YuleModelNarrow.t:EXAMPLE" spec="Exchange" tree="@Tree.t:EXAMPLE" weight="15.0"/>
+
+    <operator id="YuleModelWide.t:EXAMPLE" spec="Exchange" isNarrow="false" tree="@Tree.t:EXAMPLE" weight="3.0"/>
+
+    <operator id="YuleModelWilsonBalding.t:EXAMPLE" spec="WilsonBalding" tree="@Tree.t:EXAMPLE" weight="3.0"/>
+
+    <operator id="BMT_ModelTestOperator.s:EXAMPLE" spec="BMTMergeSplitOperator" modelIndicator="@BMT_ModelIndicator.s:EXAMPLE" rates="@BMT_Rates.s:EXAMPLE" substModel="@RevJump.s:EXAMPLE" weight="1.0"/>
+
+    <operator id="BMT_Ratescaler.s:EXAMPLE" spec="BMTExchangeOperator" delta="0.15" modelIndicator="@BMT_ModelIndicator.s:EXAMPLE" rates="@BMT_Rates.s:EXAMPLE" substModel="@RevJump.s:EXAMPLE" weight="1.0"/>
+
+    <operator id="BMT_gammaShapeScaler.s:EXAMPLE" spec="BMTScaleOperator" count="@hasGammaRates.s:EXAMPLE" parameter="@BMT_gammaShape.s:EXAMPLE" scaleFactor="0.5" weight="0.5"/>
+
+    <operator id="BMT_ProportionInvariableScaler.s:EXAMPLE" spec="BMTScaleOperator" count="@hasInvariableSites.s:EXAMPLE" parameter="@BMT_ProportionInvariable.s:EXAMPLE" scaleFactor="0.5" weight="0.5"/>
+
+    <operator id="BMT_hasGammaRatesFlipper.s:EXAMPLE" spec="BMTBirthDeathOperator" count="@hasGammaRates.s:EXAMPLE" rates="@BMT_gammaShape.s:EXAMPLE" weight="0.1"/>
+
+    <operator id="BMT_hasInvariableSitesFlipper.s:EXAMPLE" spec="BMTBirthDeathOperator" count="@hasInvariableSites.s:EXAMPLE" rates="@BMT_ProportionInvariable.s:EXAMPLE" weight="0.1"/>
+
+    <operator id="BMT_FreqsFlipOperator.s:EXAMPLE" spec="BitFlipOperator" parameter="@hasEqualFreqs.s:EXAMPLE" weight="0.1"/>
+
+    <operator id="FixMeanMutationRatesOperator" spec="DeltaExchangeOperator" delta="0.75" weight="2.0">
+        <parameter idref="BMT_mutationRate.s:EXAMPLE"/>
+        <weightvector id="weightparameter" spec="parameter.IntegerParameter" estimate="false" lower="0" upper="0">1758</weightvector>
+    </operator>
+
+    <operator id="ucldStdevScaler.c:EXAMPLE" spec="ScaleOperator" parameter="@ucldStdev.c:EXAMPLE" scaleFactor="0.5" weight="3.0"/>
+
+    <operator id="CategoriesRandomWalk.c:EXAMPLE" spec="IntRandomWalkOperator" parameter="@rateCategories.c:EXAMPLE" weight="10.0" windowSize="1"/>
+
+    <operator id="CategoriesSwapOperator.c:EXAMPLE" spec="SwapOperator" intparameter="@rateCategories.c:EXAMPLE" weight="10.0"/>
+
+    <operator id="CategoriesUniform.c:EXAMPLE" spec="UniformOperator" parameter="@rateCategories.c:EXAMPLE" weight="10.0"/>
+
+    <logger id="tracelog" fileName="EXAMPLE.log" logEvery="1000" model="@posterior" sanitiseHeaders="true" sort="smart">
+        <log idref="posterior"/>
+        <log idref="likelihood"/>
+        <log idref="prior"/>
+        <log idref="treeLikelihood.EXAMPLE"/>
+        <log id="TreeHeight.t:EXAMPLE" spec="beast.evolution.tree.TreeHeightLogger" tree="@Tree.t:EXAMPLE"/>
+        <log idref="YuleModel.t:EXAMPLE"/>
+        <log idref="birthRate.t:EXAMPLE"/>
+        <log idref="RevJump.s:EXAMPLE"/>
+        <log idref="BMT_ModelIndicator.s:EXAMPLE"/>
+        <log idref="BMT_gammaShape.s:EXAMPLE"/>
+        <log idref="BMT_ProportionInvariable.s:EXAMPLE"/>
+        <log idref="hasGammaRates.s:EXAMPLE"/>
+        <log idref="hasInvariableSites.s:EXAMPLE"/>
+        <log id="ActivePropInvariable.s:EXAMPLE" spec="beast.util.Script" argnames="BMT_ProportionInvariable hasInvariableSites" expression="BMT_ProportionInvariable * hasInvariableSites">
+            <x idref="BMT_ProportionInvariable.s:EXAMPLE"/>
+            <x idref="hasInvariableSites.s:EXAMPLE"/>
+        </log>
+        <log id="ActiveGammaShape.s:EXAMPLE" spec="beast.util.Script" argnames="BMT_gammaShape hasGammaRates" expression="BMT_gammaShape * hasGammaRates">
+            <x idref="BMT_gammaShape.s:EXAMPLE"/>
+            <x idref="hasGammaRates.s:EXAMPLE"/>
+        </log>
+        <log idref="hasEqualFreqs.s:EXAMPLE"/>
+        <log idref="BMT_mutationRate.s:EXAMPLE"/>
+        <log idref="ucldStdev.c:EXAMPLE"/>
+        <log id="rate.c:EXAMPLE" spec="beast.evolution.branchratemodel.RateStatistic" branchratemodel="@RelaxedClock.c:EXAMPLE" tree="@Tree.t:EXAMPLE"/>
+        <log idref="BI_taxon.prior"/>
+    </logger>
+
+    <logger id="screenlog" logEvery="1000">
+        <log idref="posterior"/>
+        <log id="ESS.0" spec="util.ESS" arg="@posterior"/>
+        <log idref="likelihood"/>
+        <log idref="prior"/>
+    </logger>
+
+    <logger id="treelog.t:EXAMPLE" fileName="$(tree).trees" logEvery="N_Trees" mode="tree">
+        <log id="TreeWithMetaDataLogger.t:EXAMPLE" spec="beast.evolution.tree.TreeWithMetaDataLogger" branchratemodel="@RelaxedClock.c:EXAMPLE" tree="@Tree.t:EXAMPLE"/>
+    </logger>
+
+</run>
+
+</beast>'
+
+## bModelTest-Relaxed log normal clock-Birth-Death
+## Template_code: SbC3P2
+TC[6]='
+<map name="Uniform" >beast.math.distributions.Uniform</map>
+<map name="Exponential" >beast.math.distributions.Exponential</map>
+<map name="LogNormal" >beast.math.distributions.LogNormalDistributionModel</map>
+<map name="Normal" >beast.math.distributions.Normal</map>
+<map name="Beta" >beast.math.distributions.Beta</map>
+<map name="Gamma" >beast.math.distributions.Gamma</map>
+<map name="LaplaceDistribution" >beast.math.distributions.LaplaceDistribution</map>
+<map name="prior" >beast.math.distributions.Prior</map>
+<map name="InverseGamma" >beast.math.distributions.InverseGamma</map>
+<map name="OneOnX" >beast.math.distributions.OneOnX</map>
+
+
+<run id="mcmc" spec="MCMC" chainLength="MCMC_CHAIN_L">
+    <state id="state" storeEvery="5000">
+        <tree id="Tree.t:EXAMPLE" name="stateNode">
+            <taxonset id="TaxonSet.EXAMPLE" spec="TaxonSet">
+                <alignment idref="EXAMPLE"/>
+            </taxonset>
+        </tree>
+        <stateNode id="BMT_ModelIndicator.s:EXAMPLE" spec="parameter.IntegerParameter" lower="0" upper="5">5</stateNode>
+        <parameter id="BMT_Rates.s:EXAMPLE" dimension="6" lower="0.01" name="stateNode" upper="100.0">1.0</parameter>
+        <parameter id="BMT_gammaShape.s:EXAMPLE" name="stateNode">1.0</parameter>
+        <parameter id="BMT_ProportionInvariable.s:EXAMPLE" lower="0.0" name="stateNode" upper="1.0">0.1</parameter>
+        <stateNode id="hasInvariableSites.s:EXAMPLE" spec="parameter.IntegerParameter">1</stateNode>
+        <stateNode id="hasGammaRates.s:EXAMPLE" spec="parameter.IntegerParameter">1</stateNode>
+        <stateNode id="hasEqualFreqs.s:EXAMPLE" spec="parameter.BooleanParameter">false</stateNode>
+        <parameter id="BMT_mutationRate.s:EXAMPLE" name="stateNode">1.0</parameter>
+        <parameter id="ucldStdev.c:EXAMPLE" lower="0.0" name="stateNode">0.1</parameter>
+        <stateNode id="rateCategories.c:EXAMPLE" spec="parameter.IntegerParameter" dimension="4">1</stateNode>
+        <parameter id="BDBirthRate.t:EXAMPLE" lower="0.0" name="stateNode" upper="10000.0">1.0</parameter>
+        <parameter id="BDDeathRate.t:EXAMPLE" lower="0.0" name="stateNode" upper="1.0">0.5</parameter>
+    </state>
+
+    <init id="RandomTree.t:EXAMPLE" spec="beast.evolution.tree.RandomTree" estimate="false" initial="@Tree.t:EXAMPLE" taxa="@EXAMPLE">
+        <populationModel id="ConstantPopulation0.t:EXAMPLE" spec="ConstantPopulation">
+            <parameter id="randomPopSize.t:EXAMPLE" name="popSize">1.0</parameter>
+        </populationModel>
+    </init>
+
+    <distribution id="posterior" spec="util.CompoundDistribution">
+        <distribution id="prior" spec="util.CompoundDistribution">
+            <distribution id="BirthDeath.t:EXAMPLE" spec="beast.evolution.speciation.BirthDeathGernhard08Model" birthDiffRate="@BDBirthRate.t:EXAMPLE" relativeDeathRate="@BDDeathRate.t:EXAMPLE" tree="@Tree.t:EXAMPLE"/>
+            <prior id="BirthRatePrior.t:EXAMPLE" name="distribution" x="@BDBirthRate.t:EXAMPLE">
+                <Uniform id="Uniform.4" name="distr" upper="1000.0"/>
+            </prior>
+            <prior id="DeathRatePrior.t:EXAMPLE" name="distribution" x="@BDDeathRate.t:EXAMPLE">
+                <Uniform id="Uniform.5" name="distr"/>
+            </prior>
+            <distribution id="BMT_PropInvariablePrior.s:EXAMPLE" spec="beast.math.distributions.BMTPrior" count="@hasInvariableSites.s:EXAMPLE" x="@BMT_ProportionInvariable.s:EXAMPLE">
+                <Beta id="Beta.0" name="distr">
+                    <parameter id="RealParameter.1" lower="0.0" name="alpha" upper="0.0">1.0</parameter>
+                    <parameter id="RealParameter.2" lower="0.0" name="beta" upper="0.0">4.0</parameter>
+                </Beta>
+            </distribution>
+            <distribution id="BMT_RatesPrior.s:EXAMPLE" spec="beast.math.distributions.NucleotideRevJumpSubstModelRatePrior" modelIndicator="@BMT_ModelIndicator.s:EXAMPLE" x="@BMT_Rates.s:EXAMPLE">
+                <substModel id="RevJump.s:EXAMPLE" spec="NucleotideRevJumpSubstModel" modelIndicator="@BMT_ModelIndicator.s:EXAMPLE" rates="@BMT_Rates.s:EXAMPLE">
+                    <frequencies id="BMTfreqs.s:EXAMPLE" spec="ModelFrequencies" data="@EXAMPLE" hasEqualFreqs="@hasEqualFreqs.s:EXAMPLE"/>
+                </substModel>
+                <Exponential id="BMT_RatesPrior.s:EXAMPLEx" name="distr"/>
+            </distribution>
+            <distribution id="BMT_GammaShapePrior.s:EXAMPLE" spec="beast.math.distributions.BMTPrior" count="@hasGammaRates.s:EXAMPLE" x="@BMT_gammaShape.s:EXAMPLE">
+                <Exponential id="Exponential.0" name="distr">
+                    <parameter id="RealParameter.0" estimate="false" name="mean">1.0</parameter>
+                </Exponential>
+            </distribution>
+            <prior id="ucldStdevPrior.c:EXAMPLE" name="distribution" x="@ucldStdev.c:EXAMPLE">
+                <Gamma id="Gamma.0" name="distr">
+                    <parameter id="RealParameter.5" estimate="false" name="alpha">0.5396</parameter>
+                    <parameter id="RealParameter.6" estimate="false" name="beta">0.3819</parameter>
+                </Gamma>
+            </prior>
+            <distribution id="BI_taxon.prior" spec="beast.math.distributions.MRCAPrior" monophyletic="true" tree="@Tree.t:EXAMPLE">
+                <taxonset id="BI_taxon" spec="TaxonSet">
+                    <taxon id="Monoph_A" spec="Taxon"/>
+                    <taxon id="Monoph_B" spec="Taxon"/>
+                </taxonset>
+            </distribution>
+        </distribution>
+        <distribution id="likelihood" spec="util.CompoundDistribution" useThreads="true">
+            <distribution id="treeLikelihood.EXAMPLE" spec="ThreadedTreeLikelihood" data="@EXAMPLE" tree="@Tree.t:EXAMPLE">
+                <siteModel id="BEASTModelTest.s:EXAMPLE" spec="BEASTModelTestSiteModel" gammaCategoryCount="4" hasGammaRates="@hasGammaRates.s:EXAMPLE" hasInvariantSites="@hasInvariableSites.s:EXAMPLE" mutationRate="@BMT_mutationRate.s:EXAMPLE" proportionInvariant="@BMT_ProportionInvariable.s:EXAMPLE" shape="@BMT_gammaShape.s:EXAMPLE" substModel="@RevJump.s:EXAMPLE"/>
+                <branchRateModel id="RelaxedClock.c:EXAMPLE" spec="beast.evolution.branchratemodel.UCRelaxedClockModel" rateCategories="@rateCategories.c:EXAMPLE" tree="@Tree.t:EXAMPLE">
+                    <LogNormal id="LogNormalDistributionModel.c:EXAMPLE" S="@ucldStdev.c:EXAMPLE" meanInRealSpace="true" name="distr">
+                        <parameter id="RealParameter.4" estimate="false" lower="0.0" name="M" upper="1.0">1.0</parameter>
+                    </LogNormal>
+                    <parameter id="ucldMean.c:EXAMPLE" estimate="false" name="clock.rate">1.0</parameter>
+                </branchRateModel>
+            </distribution>
+        </distribution>
+    </distribution>
+
+    <operator id="BMT_ModelTestOperator.s:EXAMPLE" spec="BMTMergeSplitOperator" modelIndicator="@BMT_ModelIndicator.s:EXAMPLE" rates="@BMT_Rates.s:EXAMPLE" substModel="@RevJump.s:EXAMPLE" weight="1.0"/>
+
+    <operator id="BMT_Ratescaler.s:EXAMPLE" spec="BMTExchangeOperator" delta="0.15" modelIndicator="@BMT_ModelIndicator.s:EXAMPLE" rates="@BMT_Rates.s:EXAMPLE" substModel="@RevJump.s:EXAMPLE" weight="1.0"/>
+
+    <operator id="BMT_gammaShapeScaler.s:EXAMPLE" spec="BMTScaleOperator" count="@hasGammaRates.s:EXAMPLE" parameter="@BMT_gammaShape.s:EXAMPLE" scaleFactor="0.5" weight="0.5"/>
+
+    <operator id="BMT_ProportionInvariableScaler.s:EXAMPLE" spec="BMTScaleOperator" count="@hasInvariableSites.s:EXAMPLE" parameter="@BMT_ProportionInvariable.s:EXAMPLE" scaleFactor="0.5" weight="0.5"/>
+
+    <operator id="BMT_hasGammaRatesFlipper.s:EXAMPLE" spec="BMTBirthDeathOperator" count="@hasGammaRates.s:EXAMPLE" rates="@BMT_gammaShape.s:EXAMPLE" weight="0.1"/>
+
+    <operator id="BMT_hasInvariableSitesFlipper.s:EXAMPLE" spec="BMTBirthDeathOperator" count="@hasInvariableSites.s:EXAMPLE" rates="@BMT_ProportionInvariable.s:EXAMPLE" weight="0.1"/>
+
+    <operator id="BMT_FreqsFlipOperator.s:EXAMPLE" spec="BitFlipOperator" parameter="@hasEqualFreqs.s:EXAMPLE" weight="0.1"/>
+
+    <operator id="FixMeanMutationRatesOperator" spec="DeltaExchangeOperator" delta="0.75" weight="2.0">
+        <parameter idref="BMT_mutationRate.s:EXAMPLE"/>
+        <weightvector id="weightparameter" spec="parameter.IntegerParameter" estimate="false" lower="0" upper="0">1758</weightvector>
+    </operator>
+
+    <operator id="ucldStdevScaler.c:EXAMPLE" spec="ScaleOperator" parameter="@ucldStdev.c:EXAMPLE" scaleFactor="0.5" weight="3.0"/>
+
+    <operator id="CategoriesRandomWalk.c:EXAMPLE" spec="IntRandomWalkOperator" parameter="@rateCategories.c:EXAMPLE" weight="10.0" windowSize="1"/>
+
+    <operator id="CategoriesSwapOperator.c:EXAMPLE" spec="SwapOperator" intparameter="@rateCategories.c:EXAMPLE" weight="10.0"/>
+
+    <operator id="CategoriesUniform.c:EXAMPLE" spec="UniformOperator" parameter="@rateCategories.c:EXAMPLE" weight="10.0"/>
+
+    <operator id="BirthDeathTreeScaler.t:EXAMPLE" spec="ScaleOperator" scaleFactor="0.5" tree="@Tree.t:EXAMPLE" weight="3.0"/>
+
+    <operator id="BirthDeathTreeRootScaler.t:EXAMPLE" spec="ScaleOperator" rootOnly="true" scaleFactor="0.5" tree="@Tree.t:EXAMPLE" weight="3.0"/>
+
+    <operator id="BirthDeathUniformOperator.t:EXAMPLE" spec="Uniform" tree="@Tree.t:EXAMPLE" weight="30.0"/>
+
+    <operator id="BirthDeathSubtreeSlide.t:EXAMPLE" spec="SubtreeSlide" tree="@Tree.t:EXAMPLE" weight="15.0"/>
+
+    <operator id="BirthDeathNarrow.t:EXAMPLE" spec="Exchange" tree="@Tree.t:EXAMPLE" weight="15.0"/>
+
+    <operator id="BirthDeathWide.t:EXAMPLE" spec="Exchange" isNarrow="false" tree="@Tree.t:EXAMPLE" weight="3.0"/>
+
+    <operator id="BirthDeathWilsonBalding.t:EXAMPLE" spec="WilsonBalding" tree="@Tree.t:EXAMPLE" weight="3.0"/>
+
+    <operator id="BirthRateScaler.t:EXAMPLE" spec="ScaleOperator" parameter="@BDBirthRate.t:EXAMPLE" scaleFactor="0.75" weight="3.0"/>
+
+    <operator id="DeathRateScaler.t:EXAMPLE" spec="ScaleOperator" parameter="@BDDeathRate.t:EXAMPLE" scaleFactor="0.75" weight="3.0"/>
+
+    <logger id="tracelog" fileName="EXAMPLE.log" logEvery="1000" model="@posterior" sanitiseHeaders="true" sort="smart">
+        <log idref="posterior"/>
+        <log idref="likelihood"/>
+        <log idref="prior"/>
+        <log idref="treeLikelihood.EXAMPLE"/>
+        <log id="TreeHeight.t:EXAMPLE" spec="beast.evolution.tree.TreeHeightLogger" tree="@Tree.t:EXAMPLE"/>
+        <log idref="RevJump.s:EXAMPLE"/>
+        <log idref="BMT_ModelIndicator.s:EXAMPLE"/>
+        <log idref="BMT_gammaShape.s:EXAMPLE"/>
+        <log idref="BMT_ProportionInvariable.s:EXAMPLE"/>
+        <log idref="hasGammaRates.s:EXAMPLE"/>
+        <log idref="hasInvariableSites.s:EXAMPLE"/>
+        <log id="ActivePropInvariable.s:EXAMPLE" spec="beast.util.Script" argnames="BMT_ProportionInvariable hasInvariableSites" expression="BMT_ProportionInvariable * hasInvariableSites">
+            <x idref="BMT_ProportionInvariable.s:EXAMPLE"/>
+            <x idref="hasInvariableSites.s:EXAMPLE"/>
+        </log>
+        <log id="ActiveGammaShape.s:EXAMPLE" spec="beast.util.Script" argnames="BMT_gammaShape hasGammaRates" expression="BMT_gammaShape * hasGammaRates">
+            <x idref="BMT_gammaShape.s:EXAMPLE"/>
+            <x idref="hasGammaRates.s:EXAMPLE"/>
+        </log>
+        <log idref="hasEqualFreqs.s:EXAMPLE"/>
+        <log idref="BMT_mutationRate.s:EXAMPLE"/>
+        <log idref="ucldStdev.c:EXAMPLE"/>
+        <log id="rate.c:EXAMPLE" spec="beast.evolution.branchratemodel.RateStatistic" branchratemodel="@RelaxedClock.c:EXAMPLE" tree="@Tree.t:EXAMPLE"/>
+        <log idref="BirthDeath.t:EXAMPLE"/>
+        <log idref="BDBirthRate.t:EXAMPLE"/>
+        <log idref="BDDeathRate.t:EXAMPLE"/>
+        <log idref="BI_taxon.prior"/>
+    </logger>
+
+    <logger id="screenlog" logEvery="1000">
+        <log idref="posterior"/>
+        <log id="ESS.0" spec="util.ESS" arg="@posterior"/>
+        <log idref="likelihood"/>
+        <log idref="prior"/>
+    </logger>
+
+    <logger id="treelog.t:EXAMPLE" fileName="$(tree).trees" logEvery="N_Trees" mode="tree">
+        <log id="TreeWithMetaDataLogger.t:EXAMPLE" spec="beast.evolution.tree.TreeWithMetaDataLogger" branchratemodel="@RelaxedClock.c:EXAMPLE" tree="@Tree.t:EXAMPLE"/>
+    </logger>
+
+</run>
+
+</beast>'
+
+# Read the flags
+while getopts "P:L:t:A:B:ys" opt; do
+  case ${opt} in
+  P) pr=${OPTARG} ;;
+  L) Chain_L=$(echo "${OPTARG}" | cut -d "." -f 1) ;;
+  t) thread=${OPTARG} ;;
+  A) Monoph_A=${OPTARG} ;;
+  B) Monoph_B=${OPTARG} ;;
+  y) answer="Y" ;;
+  s) summary="Y" ;;
+  esac
+done
+Model_selection=$(echo "${pr}" | cut -d "S" -f 2 | cut -c 1-1)
+Clock_pr=$(echo "${pr}" | cut -d 'C' -f 2 | cut -c 1-1)
+Tree_pr=$(echo "${pr}" | cut -d 'P' -f 2 | cut -c 1-1)
+
+if [[ -z "${answer}" ]]; then
+  read -p "Run on current folder?(Y/n) " answer
+fi
+if [[ "${answer}" == "y" ]] || [[ "${answer}" == "Y" ]]; then
+  export dir=$(pwd)
+
+  # Check whether all the settings are correct
+  ## Flags
+  if [[ -z "${Model_selection}" ]] || [[ -z "${Clock_pr}" ]] || [[ -z "${Tree_pr}" ]]; then
+    echo -e "\n***Message: Parameters resetting is needed."
+    read -p $'\nUse bModelTest to select evolutionary model?(Y/n) ' Model_selection
+    if [[ "${Model_selection}" == "y" ]] || [[ "${Model_selection}" == "Y" ]]; then
+      Model_selection="b"
+    else
+      echo -e "***Message:Other options are NOT applicable at the present.\n***Analysis aborts!" && exit
+    fi
+    read -p $'\nClock prior?\n1.Strict.\n2.Relaxed exponential.\n3.Relaxed log normal.\nIndex: ' Clock_pr
+    Clock_pr=$(echo "${Clock_pr}" | cut -d "." -f 1)
+
+    read -p $'\nTree prior?\n1.Yule process.\n2.Birth-Death.\nIndex: ' Tree_pr
+    Tree_pr=$(echo "${Tree_pr}" | cut -d "." -f 1)
+
+    read -p $'\nMCMC chain length (default: 10000000): ' Chain_L
+    Chain_L=$(echo "${Chain_L}" | cut -d "." -f 1)
+  fi
+  if [[ "${Model_selection}" == "b" ]]; then
+    if [[ "${Clock_pr}" -ge 1 ]] && [[ "${Clock_pr}" -le 3 ]]; then
+      if [[ "${Tree_pr}" -ge 1 ]] && [[ "${Tree_pr}" -le 2 ]]; then
+        export Template_code=$(echo "S${Model_selection}C${Clock_pr}P${Tree_pr}")
+      else
+        echo -e "***Message:Other options are NOT applicable at the present.\n***Analysis aborts!" && exit
+      fi
+    else
+      echo -e "***Message:Other options are NOT applicable at the present.\n***Analysis aborts!" && exit
+    fi
+  else
+    echo -e "***Message:Other options are NOT applicable at the present.\n***Analysis aborts!" && exit
+  fi
+
+  ## Templates
+  if [[ "${Template_code}" == "SbC1P1" ]]; then
+    tci=1
+  elif [[ "${Template_code}" == "SbC1P2" ]]; then
+    tci=2
+  elif [[ "${Template_code}" == "SbC3P1" ]]; then
+    tci=5
+  elif [[ "${Template_code}" == "SbC3P2" ]]; then
+    tci=6
+  else
+    echo -e "***Message:Other options are NOT applicable at the present.\n***Analysis aborts!" && exit
+  fi
+  export Template=${TC[${tci}]}
+
+  ## Check the number of threads
+  if [[ -z "${thread}" ]]; then
+    thread=$(nproc --all)
+  fi
+
+  ## Check the length of MCMC chain
+  if [[ -z "${Chain_L}" ]]; then
+    Chain_L=10000000
+  fi
+  export Chain_L
+  export N_recorded_trees=$((Chain_L / 10000))
+
+  ## Check the setting for monophyletic OTUs
+  if [[ -z "${Monoph_A}" ]] || [[ -z "${Monoph_B}" ]]; then
+    export MP_automatic="True"
+  else
+    export Monoph_A
+    export Monoph_B
+  fi
+
+  if [[ "${summary}" != "Y" ]]; then
+    # Run the analysis
+    echo -e "\nAnalysis starts...\nPlease do NOT modify files until the analysis is completed."
+    if [[ ! -d "${dir}/log" ]]; then
+      mkdir ${dir}/log
+    fi
+    if [[ ! -d "${dir}/trees/" ]]; then
+      mkdir ${dir}/trees
+    fi
+    if [[ ! -d "${dir}/trees/MCMC" ]]; then
+      mkdir ${dir}/trees/MCMC
+    fi
+    if [[ ! -d "${dir}/configuration" ]]; then
+      mkdir ${dir}/configuration
+    fi
+    if [[ ! -d "${dir}/state" ]]; then
+      mkdir ${dir}/state
+    fi
+    ls ${dir} | grep "fasta" >file_list
+    export -f Beauti_and_Beast
+    parallel --no-notice -j ${thread} "Beauti_and_Beast {}" :::: ${dir}/file_list
+
+    # Summarize the trees
+    if [[ ! -d "${dir}/trees/Summarized_nexus" ]]; then
+      mkdir ${dir}/trees/Summarized_nexus
+    fi
+    if [[ ! -d "${dir}/trees/Summarized_newick" ]]; then
+      mkdir ${dir}/trees/Summarized_newick
+    fi
+    ls ${dir}/trees/MCMC | cut -d "." -f 1 >${dir}/tree_list
+    parallel --no-notice -j ${thread} "treeannotator -heights mean -burnin 10 ${dir}/trees/MCMC/{}.trees ${dir}/trees/Summarized_nexus/{}.nex" :::: ${dir}/tree_list
+    cd ${dir}/trees/Summarized_nexus
+    export -f nex_to_new
+    parallel --no-notice -j ${thread} "nex_to_new {}" :::: ${dir}/tree_list
+
+    # Summarize the stats
+    cd ${dir}/log
+    if [[ ! -d "${dir}/statistics" ]]; then
+      mkdir ${dir}/statistics
+    fi
+    Rscript <(echo "${Stats_summary}") 2>&1 >/dev/null
+    mv ${dir}/log/*_stats.csv ${dir}/statistics/
+
+    # File sorting
+    rm -f ${dir}/file_list ${dir}/tree_list
+    if [[ ! -d "${dir}/${Template_code}" ]]; then
+      mkdir ${dir}/${Template_code}
+    fi
+    mv ${dir}/log/ ${dir}/statistics/ ${dir}/trees/ ${dir}/configuration/ ${dir}/state/ ${dir}/${Template_code}/
+  fi
+
+  # Extract the dating information
+  if [[ -d "${dir}/${Template_code}" ]]; then
+    cd ${dir}/${Template_code}/statistics/
+    Rscript <(echo "${Dating}") 2>&1 >/dev/null
+    if [[ ! -d "${dir}/${Template_code}/dating" ]]; then
+      mkdir ${dir}/${Template_code}/dating
+    fi
+    for file in ${dir}/${Template_code}/statistics/*txt; do
+      gene=$(basename ${file} | cut -d "_" -f 1 | cut -d "-" -f 1)
+      taxa=$(basename ${file} | cut -d "_" -f 1 | cut -d "-" -f 2)
+      content=$(cat ${file})
+      if [[ ! -e "${dir}/${Template_code}/dating/result.date" ]]; then
+        head=1
+      fi
+      if [[ "${head}" -eq 1 ]]; then
+        echo "Taxa Gene MRCA.mean MRCA.stderr_mean MRCA.stdev MRCA.hpd_interval_low MRCA.hpd_interval_high MRCA.ess Root.mean Root.stderr_mean Root.stdev Root.hpd_interval_low Root.hpd_interval_high Root.ess" >${dir}/${Template_code}/dating/result.date
+        ((head++))
+      fi
+      echo "${taxa} ns${gene} ${content}" >>${dir}/${Template_code}/dating/result.date
+      rm -f ${file}
+    done
+  else
+    echo -e "***Message:Directory ${dir}/${Template_code} does NOT exit.\n***Analysis aborts."
+  fi
+
+  # Calculate the ratio MRCA:Root
+  if [[ -d "${dir}/${Template_code}/dating" ]]; then
+    cd ${dir}/${Template_code}/dating
+    Rscript <(echo "${Ratio}") 2>&1 >/dev/null
+  fi
+  echo -e "\nAnalysis is completed!\nCongratulations!"
+fi
