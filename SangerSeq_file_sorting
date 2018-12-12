@@ -1,0 +1,11 @@
+#!/bin/bash
+
+read -p "Folder to sort the files into different types: " fd
+
+mkdir seq ab1 phd.1 scf
+mv ${fd}/*seq seq/
+mv ${fd}/*ab1 ab1/
+mv ${fd}/*phd* phd.1/
+mv ${fd}/*scf scf/
+
+mv seq/ ab1/ phd.1/ scf/ ${fd}
