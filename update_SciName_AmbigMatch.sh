@@ -4,29 +4,21 @@ ambiguous_match() {
   w1=${1}
   w2=${2}
 
-  len1=$(echo "${#w1}")
-  len2=$(echo "${#w2}")
-
-  if [[ "${len1}" -le "${len2}" ]]; then
-    upp=${len1}
-    diff=$((len2 - len1))
-  else
-    upp=${len2}
-    diff=$((len1 - len2))
-  fi
+  alphabet="abcdefghijklmnopqrstuvwxyz"
 
   i=1
   Mis=0
-  while [[ "${i}" -le "${upp}" ]]; do
-    w1l=$(echo "${w1}" | cut -c "${i}")
-    w2l=$(echo "${w2}" | cut -c "${i}")
-    if [[ "${w1l}" != "${w2l}" ]]; then
+  while [[ "${i}" -le 26 ]]; do
+    Letter=$(echo "${alphabet}" | cut -c "${i}")
+    L1=$(echo "${w1}" | grep -oi "${Letter}" | wc -l)
+    L2=$(echo "${w2}" | grep -oi "${Letter}" | wc -l)
+    if [[ "${L1}" != "${L2}" ]]; then
       Mis=$((Mis + 1))
     fi
     ((i++))
   done
 
-  if [[ "${Mis}" -lt 3 ]]; then
+  if [[ "${Mis}" -eq 0 ]]; then
     export Ambig_logic="TRUE"
   else
     export Ambig_logic="FALSE"
