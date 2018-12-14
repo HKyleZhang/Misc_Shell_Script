@@ -13,7 +13,8 @@ ambiguous_match() {
     L1=$(echo "${w1}" | grep -oi "${Letter}" | wc -l)
     L2=$(echo "${w2}" | grep -oi "${Letter}" | wc -l)
     if [[ "${L1}" != "${L2}" ]]; then
-      Mis=$((Mis + 1))
+      Mis=1
+      break 1
     fi
     ((i++))
   done
