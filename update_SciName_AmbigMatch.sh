@@ -6,24 +6,18 @@ ambiguous_match() {
 
   alphabet="abcdefghijklmnopqrstuvwxyz"
 
+  export Ambig_logic="TRUE"
   i=1
-  Mis=0
   while [[ "${i}" -le 26 ]]; do
     Letter=$(echo "${alphabet}" | cut -c "${i}")
     L1=$(echo "${w1}" | grep -oi "${Letter}" | wc -l)
     L2=$(echo "${w2}" | grep -oi "${Letter}" | wc -l)
     if [[ "${L1}" != "${L2}" ]]; then
-      Mis=1
+      export Ambig_logic="FALSE"
       break 1
     fi
     ((i++))
   done
-
-  if [[ "${Mis}" -eq 0 ]]; then
-    export Ambig_logic="TRUE"
-  else
-    export Ambig_logic="FALSE"
-  fi
 }
 
 usage='Usage:
