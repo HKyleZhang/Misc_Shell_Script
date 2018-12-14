@@ -25,9 +25,8 @@ if [[ -e "${corfile}" ]] && [[ -e "${subfile}" ]]; then
   lnum=$(cat ${corfile} | wc -l)
   while [[ "${i}" -le "${lnum}" ]]; do
     cor_line=$(cat ${corfile} | sed -n "${i}p")
-    eng_sp=$(echo "${cor_line}" | cut -d $'\t' -f 3)
-    cor_line=$(echo -e "${cor_line}\tCorrected")
-    sub_line=$(cat ${subfile} | grep "${eng_sp}")
+    sci_sp=$(echo "${cor_line}" | cut -d $'\t' -f 2)
+    sub_line=$(cat ${subfile} | grep "${sci_sp}"$'\t')
     sed -i "s/${sub_line}/${cor_line}/" ${subfile}
     ((i++))
   done
