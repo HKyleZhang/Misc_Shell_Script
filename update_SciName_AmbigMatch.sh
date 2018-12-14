@@ -143,50 +143,51 @@ if [[ -e "${bgfile}" ]] && [[ -e "${updfile}" ]]; then
   elif [[ "${method}" -eq 3 ]]; then
     j=2
     while [[ "${j}" -le "${updlnum}" ]]; do
-      ## Update attempt using English name as key
       updfile_engsp=$(cat ${updfile} | sed -n "${j}p" | cut -d $'\t' -f 2)
-      engkey1=$(echo "${updfile_engsp}" | cut -c 1-2)
-      engkey2=$(echo "${updfile_engsp}" | rev | cut -c 1-2 | rev)
+      
+      ## Update attempt using Scientific name as key
+      updfile_scisp=$(cat ${updfile} | sed -n "${j}p" | cut -d $'\t' -f 1)
+      scikey1=$(echo "${updfile_scisp}" | cut -c 1-2)
+      scikey2=$(echo "${updfile_scisp}" | rev | cut -c 1-2 | rev)
 
-      cat ${bgfile} | grep "${engkey1}" | grep "${engkey2}"$'\t' >${dir}/.${bgfile_name}.temp
+      cat ${bgfile} | grep "${scikey1}" | grep "${scikey2}"'$' >${dir}/.${bgfile_name}.temp
       bglnum=$(cat ${dir}/.${bgfile_name}.temp | wc -l)
-      engna="TRUE"
-      engk=1
-      while [[ "${engk}" -le "${bglnum}" ]]; do
-        bgfile_engsp=$(cat ${dir}/.${bgfile_name}.temp | sed -n "${engk}p" | cut -d $'\t' -f 1)
-        ambiguous_match "${updfile_engsp}" "${bgfile_engsp}"
+      scina="TRUE"
+      scik=1
+      while [[ "${scik}" -le "${bglnum}" ]]; do
+        bgfile_scisp=$(cat ${dir}/.${bgfile_name}.temp | sed -n "${scik}p" | cut -d $'\t' -f 2)
+        ambiguous_match "${updfile_scisp}" "${bgfile_scisp}"
         if [[ "${Ambig_logic}" == "TRUE" ]]; then
-          bgline=$(cat ${dir}/.${bgfile_name}.temp | sed -n "${engk}p" | cut -d $'\t' -f 2)
+          bgline=$(cat ${dir}/.${bgfile_name}.temp | sed -n "${scik}p" | cut -d $'\t' -f 2)
           updline=$(cat ${updfile} | sed -n "${j}p")
           echo -e "${bgline}\t${updline}" >>${dir}/${updfile_name}_updated.txt
-          engna="FALSE"
+          scina="FALSE"
           break 1
         fi
-        ((engk++))
+        ((scik++))
       done
       rm -f ${dir}/.${bgfile_name}.temp
 
-      ## Update attempt using Scientific name as key
-      if [[ "${engna}" == "TRUE" ]]; then
-        updfile_scisp=$(cat ${updfile} | sed -n "${j}p" | cut -d $'\t' -f 1)
-        scikey1=$(echo "${updfile_scisp}" | cut -c 1-2)
-        scikey2=$(echo "${updfile_scisp}" | rev | cut -c 1-2 | rev)
+      ## Update attempt using English name as key
+      if [[ "${scina}" == "TRUE" ]]; then
+        engkey1=$(echo "${updfile_engsp}" | cut -c 1-2)
+        engkey2=$(echo "${updfile_engsp}" | rev | cut -c 1-2 | rev)
 
-        cat ${bgfile} | grep "${scikey1}" | grep "${scikey2}"'$' >${dir}/.${bgfile_name}.temp
+        cat ${bgfile} | grep "${engkey1}" | grep "${engkey2}"$'\t' >${dir}/.${bgfile_name}.temp
         bglnum=$(cat ${dir}/.${bgfile_name}.temp | wc -l)
-        scina="TRUE"
-        scik=1
-        while [[ "${scik}" -le "${bglnum}" ]]; do
-          bgfile_scisp=$(cat ${dir}/.${bgfile_name}.temp | sed -n "${scik}p" | cut -d $'\t' -f 2)
-          ambiguous_match "${updfile_scisp}" "${bgfile_scisp}"
+        engna="TRUE"
+        engk=1
+        while [[ "${engk}" -le "${bglnum}" ]]; do
+          bgfile_engsp=$(cat ${dir}/.${bgfile_name}.temp | sed -n "${engk}p" | cut -d $'\t' -f 1)
+          ambiguous_match "${updfile_engsp}" "${bgfile_engsp}"
           if [[ "${Ambig_logic}" == "TRUE" ]]; then
-            bgline=$(cat ${dir}/.${bgfile_name}.temp | sed -n "${scik}p" | cut -d $'\t' -f 2)
+            bgline=$(cat ${dir}/.${bgfile_name}.temp | sed -n "${engk}p" | cut -d $'\t' -f 2)
             updline=$(cat ${updfile} | sed -n "${j}p")
             echo -e "${bgline}\t${updline}" >>${dir}/${updfile_name}_updated.txt
-            scina="FALSE"
+            engna="FALSE"
             break 1
           fi
-          ((scik++))
+          ((engk++))
         done
         rm -f ${dir}/.${bgfile_name}.temp
       fi
