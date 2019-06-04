@@ -390,7 +390,7 @@ Label	Sex	Position	MolSex	Sex_Date	HMW	Selection
 Type	Quantity
 Illumina
 10XC
-Hi-Seq
+Hi-C
 PacBio
 ----------
 >Progress
