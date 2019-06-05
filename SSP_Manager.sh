@@ -58,7 +58,7 @@ format_print() {
   fi
 
   if [[ "${sample}" ]] && [[ "${plan}" ]] && [[ "${progress}" ]]; then
-    sample=$(echo "${sample}" | awk 'BEGIN{FS="\t"}; {printf "%-10s %-10s %-10s %-10s %-15s %-10s %-10s\n", $1, $2, $3, $4, $5, $6, $7}')
+    sample=$(echo "${sample}" | awk 'BEGIN{FS="\t"}; {printf "%-10s %-10s %-10s %-10s %-10s %-15s %-10s %-10s\n", $1, $2, $3, $4, $5, $6, $7, $8}')
     plan=$(echo "${plan}" | awk 'BEGIN{FS="\t"}; {printf "%-10s %-10s\n", $1, $2}')
     progress=$(echo "${progress}" | awk 'BEGIN{FS="\t"}; {printf "%-20s %-10s %-15s\n", $1, $2, $3}')
 
@@ -70,15 +70,15 @@ format_print() {
 export -f format_print
 
 search() {
-  species=$(echo "${2}" | cut -d "." -f 1)
-  if [[ ! -e "${1}/${2}" ]] && [[ -z "$(grep -wr "${species}" ${1})" ]]; then
+  species=$(echo "${2^}" | cut -d "." -f 1)
+  if [[ ! -e "${1}/${2}" ]] && [[ -z "$(grep -wir "${species}" ${1})" ]]; then
     echo -e "***Feedback: ${2} doesn't exist."
   else
     echo -e "***Feedback: ${2} exist."
     read -p "Look into the file?(Y/n) " choice
 
-    if [[ "$(grep -wr "${species}" ${1})" ]]; then
-      file=$(basename $(grep -wr "${species}" ${1} | sed -n "1p" | cut -d ':' -f 1))
+    if [[ "$(grep -wir "${species}" ${1})" ]]; then
+      file=$(basename $(grep -wir "${species}" ${1} | sed -n "1p" | cut -d ':' -f 1))
     else
       file=${2}
     fi
@@ -96,14 +96,14 @@ search() {
 }
 
 check() {
-  species=$(echo "${2}" | cut -d "." -f 1)
-  if [[ ! -e "${1}/${2}" ]] && [[ -z "$(grep -wr "${species}" ${1})" ]]; then
+  species=$(echo "${2^}" | cut -d "." -f 1)
+  if [[ ! -e "${1}/${2}" ]] && [[ -z "$(grep -wir "${species}" ${1})" ]]; then
     echo -e "***Feedback: ${2} doesn't exist."
   else
     echo -e "***Feedback: ${2} exist."
 
-    if [[ "$(grep -wr "${species}" ${1})" ]]; then
-      file=$(basename $(grep -wr "${species}" ${1} | sed -n "1p" | cut -d ':' -f 1))
+    if [[ "$(grep -wir "${species}" ${1})" ]]; then
+      file=$(basename $(grep -wir "${species}" ${1} | sed -n "1p" | cut -d ':' -f 1))
     else
       file=${2}
     fi
@@ -115,18 +115,18 @@ check() {
 }
 
 create() {
-  species=$(echo "${2}" | cut -d "." -f 1)
-  if [[ ! -e ${1}/${2} ]] && [[ -z "$(grep -wr "${species}" ${1})" ]]; then
+  species=$(echo "${2^}" | cut -d "." -f 1)
+  if [[ ! -e ${1}/${2} ]] && [[ -z "$(grep -wir "${species}" ${1})" ]]; then
     
     c_io=0
     control=0
     while [[ "${c_io}" -lt 1 ]] && [[ "${control}" -le 2 ]]; do
       if [[ "${species}" ]]; then
-        species=$(echo "${species}" | tr '_' ' ')
+        species=$(echo "${species^}" | tr '_' ' ')
         sci_name_run=$(echo "${sci_name}" | sed "s/INPUT/${species}/")
         sciname=$(Rscript <(echo "${sci_name_run}"))
         if [[ "${sciname}" != "NA" ]]; then
-          species=$(echo "${species}" | tr ' ' '_')
+          species=$(echo "${species^}" | tr ' ' '_')
           echo "${Template}" | sed "s/Sci_NA/${species}/" >${1}/${species}.profile
           echo -e "***Feedback: ${species}.profile is created."
           ((c_io++))
@@ -202,8 +202,8 @@ back
             insert=$(echo "${insert}\t${content}")
 
             j=$((column_i + 1))
-            while [[ "${j}" -le 7 ]]; do
-              insert=$(echo "${insert}\tNA")
+            while [[ "${j}" -le 8 ]]; do
+              insert=$(echo "${insert}\t")
               ((j++))
             done
 
@@ -384,7 +384,7 @@ export Template='Sci> Sci_NA
 Eng> Eng_NA
 ----------
 >Sample
-Label	Sex	Position	MolSex	Sex_Date	HMW	Selection
+Label	Sex	Position	Location	MolSex	Sex_Date	HMW	Selection
 ----------
 >Plan
 Type	Quantity
@@ -493,7 +493,7 @@ while [[ "${io}" -lt 1 ]]; do
 
       section=$(echo "${input}" | cut -d ' ' -f 3)
 
-      species=$(echo "${file}" | cut -d '.' -f 1)
+      species=$(echo "${file^}" | cut -d '.' -f 1)
       if [[ -e ${Database}/${file} ]]; then
         if [[ -z "${section}" ]]; then
           s_control=0
@@ -506,8 +506,8 @@ while [[ "${io}" -lt 1 ]]; do
         fi
 
         edit ${Database} ${file} ${section} #Direct to edit function
-      elif [[ "$(grep -wr "${species}" ${Database})" ]]; then
-        file=$(basename $(grep -wr "${species}" ${Database} | sed -n "1p" | cut -d ':' -f 1))
+      elif [[ "$(grep -wir "${species}" ${Database})" ]]; then
+        file=$(basename $(grep -wir "${species}" ${Database} | sed -n "1p" | cut -d ':' -f 1))
 
         if [[ -z "${section}" ]]; then
           s_control=0
@@ -535,11 +535,11 @@ while [[ "${io}" -lt 1 ]]; do
         file=$(echo "${file}.profile")
       fi
 
-      species=$(echo "${file}" | cut -d '.' -f 1)
+      species=$(echo "${file^}" | cut -d '.' -f 1)
       if [[ -e ${Database}/${file} ]]; then
         nano ${Database}/${file}
-      elif [[ "$(grep -wr "${species}" ${Database})" ]]; then
-        file=$(basename $(grep -wr "${species}" ${Database} | sed -n "1p" | cut -d ':' -f 1))
+      elif [[ "$(grep -wir "${species}" ${Database})" ]]; then
+        file=$(basename $(grep -wir "${species}" ${Database} | sed -n "1p" | cut -d ':' -f 1))
         nano ${Database}/${file}
       else
         echo -e "***Message:Profile doesn't exists!\n"
