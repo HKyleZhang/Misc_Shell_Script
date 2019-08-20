@@ -31,15 +31,9 @@ for i in alns_file:
         aln = AMAS.MetaAlignment(
             in_files=[file_path], data_type='dna', in_format=args.format, cores=1)
         aln_dict = aln.get_parsed_alignments()
-        try:
-            reduced_aln = aln.remove_taxa(args.taxa_to_remove)
-        finally:
-            reduced_aln = aln.remove_taxa(args.taxa_to_remove)
-
+        reduced_aln = aln.remove_taxa(args.taxa_to_remove)
         aln_format = aln.print_fasta(reduced_aln[i])
-
         name = file_path.replace('.seqio', '.seqio.reduced')
-
         with open(os.path.join(os.getcwd(), name), 'w') as out:
             out.writelines(aln_format)
             out.close()
